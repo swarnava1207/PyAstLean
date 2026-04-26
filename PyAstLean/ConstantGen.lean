@@ -70,5 +70,20 @@ def onePlusTwoNode := json% {
     }
   }
 
+class PyHAdd (α β : Type) (γ : outParam Type) where
+  hAdd : α → β → γ
+
+infixl:65 " ⟨+⟩ " => PyHAdd.hAdd
+
+instance : PyHAdd Int Int Int where
+  hAdd x y := x + y
+
+instance : PyHAdd Nat Int Int where
+  hAdd x y := (x : Int) + y
+
+instance : PyHAdd Nat Nat Nat where
+  hAdd x y := x + y
+
+#eval 1 ⟨+⟩ 2
 
 end PyAstLean

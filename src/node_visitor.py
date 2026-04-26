@@ -1,7 +1,7 @@
 import ast
 import json
 
-class ASTToJsonLeanVisitor:
+class ASTToJsonLeanVisitorBase:
     def visit(self, node):
         """
         The dynamic dispatcher. Routes an AST node to its specific visit_X method.
@@ -56,9 +56,14 @@ class ASTToJsonLeanVisitor:
         """Translates ast.Expr (e.g., a standalone expression) to a JSON IR node."""
         return self.visit(node.value)
         
+class ASTToJsonLeanVisitor(ASTToJsonLeanVisitorBase):
+    """Concrete visitor that implements the translation logic for a specific subset of Python syntax."""
+    pass  # For now, we only have BinOp, Constant, and Expr. We can add more visit methods as needed.
+        
 translator = ASTToJsonLeanVisitor()
 
 def translate_to_json(source_code):
     """Parses Python source code and translates it to a JSON IR."""
     ast_tree = ast.parse(source_code)
-    return translator.visit(ast_tree.body[0])  # Assuming we want to translate the first statement only
+    data= translator.visit(ast_tree.body[0])  # Assuming we want to translate the first statement only
+    return json.dumps(data)
