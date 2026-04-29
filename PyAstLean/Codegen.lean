@@ -50,12 +50,26 @@ initialize pygenExt :
     initial := {}
   }
 
+/-- Environment extension storing syntax transformation functions. -/
+initialize pygenTransformExt :
+    SimpleScopedEnvExtension (SyntaxNodeKind × Name) (Std.HashMap SyntaxNodeKind (Array Name)) ←
+  registerSimpleScopedEnvExtension {
+    addEntry := fun m (kind, f) =>
+        m.insert kind <| (m.getD kind #[]).push f
+    initial := {}
+  }
+
 /--
 Attribute for generating Lean code, more precisely Syntax of a given category, from JSON data. More precisely, we generate `PygenM <| TSyntax kind` from a JSON object, with the matching key as part of the attribute.
 
 As the same statement can generate different syntax categories (e.g. `def` and `let`) this is not specified in the attribute. Instead the target category is part of the signature of the function.
 -/
 syntax (name := pygen) "pygen" (str,*) : attr
+
+/--
+Attribute for Lean syntax transformers that can rewrite syntax in a given category.
+-/
+syntax (name := pygenTransform) "pygen_transform" ident : attr
 
 /--
 Extract the keys from the `pygen` attribute syntax. Returns an array of strings.
@@ -67,6 +81,15 @@ def pygenKeyM (stx : Syntax) : CoreM <| Array String := do
   | `(attr|pygen $xs,*) => do
     let keys := xs.getElems
     return keys.map (·.getString)
+  | _ => throwUnsupportedSyntax
+
+/--
+Extract the syntax kind from the `pygen_transform` attribute syntax.
+-/
+def pygenTransformKindM (stx : Syntax) : CoreM SyntaxNodeKind := do
+  match stx with
+  | `(attr|pygen_transform $kind:ident) =>
+    return kind.getId
   | _ => throwUnsupportedSyntax
 
 /--
@@ -86,6 +109,25 @@ initialize registerBuiltinAttribute {
     trace[pyastlean.pygen.debug] m!"pygen: {decl}; keys: {keys}"
     for key in keys do
       pygenExt.add (decl, key) kind
+}
+
+/--
+An environment extension for syntax transformation functions. It stores functions that can
+transform generated syntax after the initial JSON-to-syntax pass.
+-/
+initialize registerBuiltinAttribute {
+  name := `pygenTransform
+  descr := "Lean syntax transformer for generated code"
+  add := fun decl stx attrKind => MetaM.run' do
+    let declTy := (← getConstInfo decl).type
+    let kind ← pygenTransformKindM stx
+    let kindExpr : Q(SyntaxNodeKind) := toExpr kind
+    let expectedType : Q(Type) := q((stx : TSyntax $kindExpr) → PygenM (TSyntax $kindExpr))
+    unless ← isDefEq declTy expectedType do
+      throwError
+        s!"pygen_transform: {decl} has type {declTy}, but expected {expectedType}"
+    trace[pyastlean.pygen.debug] m!"pygen_transform: {decl}; kind: {kind}"
+    pygenTransformExt.add (kind, decl) attrKind
 }
 
 /-- Environment extension storing code generation lemmas -/
@@ -124,6 +166,12 @@ def pygenMatches (key: String) : CoreM <| Array Name := do
   if fs.isEmpty then
     trace[pyastlean.pygen.debug] m!"no function found for key {key} in {allKeys.toList}"
   return fs
+
+/--
+Get the syntax transformation functions registered for a syntax category.
+-/
+def pygenTransformers (kind : SyntaxNodeKind) : CoreM <| Array Name := do
+  return (pygenTransformExt.getState (← getEnv)).getD kind #[]
 
 def codeFromFunc (f: Name) (json: Json) (kind: SyntaxNodeKind)  : PygenM <| TSyntax kind := do
   let fInfo ← getConstInfo f

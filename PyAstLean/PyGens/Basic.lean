@@ -181,6 +181,10 @@ def fnId := Id.run do
   let m := n + 1
   return m
 
+def n₀ : Id Nat := 3
+
+#eval let m : Nat := n₀; m + (1 : Nat)
+
 set_option pp.all true in
 #print fnId
 -- #eval fn 3
