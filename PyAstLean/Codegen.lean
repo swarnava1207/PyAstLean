@@ -188,8 +188,12 @@ def getCode (json: Json) (kind: SyntaxNodeKind) : PygenM <| TSyntax kind := do
   let .ok key := json.getObjValAs? String "node_type" | throwError
     s!"pygen: JSON object does not have a 'node_type' field or it is not a string: {json}"
   let fs ← pygenMatches key
-  let code? ← fs.findSomeM? (fun f => try
-    let code ← codeFromFunc f json kind
+  let code? ← fs.findSomeM? (fun f => do try
+    let mut code ← codeFromFunc f json kind
+    let transformers ← pygenTransformers kind
+    for t in transformers do
+      let transformFn ← unsafe evalConst (TSyntax kind → PygenM (TSyntax kind)) t
+      code ← transformFn code
     pure (some code)
   catch e =>
     throwError s!"Error in code generation function {f} for key '{key}' and syntax category '{kind}': {← e.toMessageData.toString}")
