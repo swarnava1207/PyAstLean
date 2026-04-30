@@ -46,6 +46,10 @@ def nameSyntax : (kind : SyntaxNodeKind) → Json →
     let .ok id := json.getObjValAs? String "id" | throwError
       s!"Name node does not have an 'id' field or it is not a string: {json}"
     return mkIdent id.toName
+  | `ident, json => do
+    let .ok id := json.getObjValAs? String "id" | throwError
+      s!"Name node does not have an 'id' field or it is not a string: {json}"
+    return mkIdent id.toName
   | _, _ => throwError s!"Unsupported syntax category for Name node"
 
 def js₀ := json% {
@@ -71,11 +75,15 @@ class PyHSub (α β : Type) (γ : outParam Type) where
 
 infix:65 " -ₚ " => PyHSub.hSub
 
+@[default_instance]
 instance (priority:= low) {α β γ} [HSub α β γ] : PyHSub α β γ where
   hSub := HSub.hSub
 
+@[default_instance]
 instance (priority := high) : PyHSub Nat Nat Int where
   hSub := fun a b => (a :  Int) - (b : Int)
+
+#eval 3 -ₚ 5
 
 class PyHMul (α β : Type) (γ : outParam Type) where
   hMul : α → β → γ
@@ -167,6 +175,13 @@ def attributeSyntax : (kind : SyntaxNodeKind) → Json →
       -- IO.eprintln s!"Generated code for Attribute value: {valueCode} : {← `($valueCode)}" -- Debugging output
       let attrId := mkIdent attr.toName
       `($valueCode.$attrId)
+  | `ident, json => do
+    let .ok valueJson := json.getObjValAs? Json "value" | throwError
+      s!"Attribute node does not have a 'value' field or it is not a JSON value: {json}"
+    let .ok attr := json.getObjValAs? String "attr" | throwError
+      s!"Attribute node does not have an 'attr' field or it is not a string: {json}"
+    let id ← getCode valueJson `ident
+    return mkIdent <| id.getId ++ attr.toName
   | _, _ => throwError s!"Unsupported syntax category for Attribute node"
 
 
@@ -217,7 +232,7 @@ def elabCheckCmd : (stx : TSyntax `command) → PygenM (TSyntax `command)
       return cmd
     try
       liftCommandElabM <| Command.elabCommand cmd
-      IO.eprintln s!"Successfully elaborated command: {cmd}"  -- Debugging output
+      IO.eprintln s!"Successfully elaborated command: {← PrettyPrinter.ppCommand cmd}"  -- Debugging output
       return cmd
     catch e =>
       throwError s!"Error elaborating code: {← e.toMessageData.toString}"

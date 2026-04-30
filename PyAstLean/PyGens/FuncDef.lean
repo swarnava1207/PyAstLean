@@ -17,9 +17,7 @@ def assignSyntax : (kind : SyntaxNodeKind) → Json →
     | `command, json => do
         let .ok target := json.getObjVal? "target" | throwError
           s!"Assign node does not have a 'target' field or it is not a JSON value: {json}"
-        let .ok idStr := target.getObjValAs? String "id" | throwError
-          s!"Assign target does not have an 'id' field or it is not a string: {target}"
-        let nameIdent := mkIdent idStr.toName
+        let nameIdent ← getCode target `ident
         let .ok value := json.getObjVal? "value" | throwError
           s!"Assign node does not have a 'value' field or it is not a JSON value: {json}"
         let valueStx ← getCode value `term
@@ -27,9 +25,7 @@ def assignSyntax : (kind : SyntaxNodeKind) → Json →
     | `doElem, json => do
         let .ok target := json.getObjVal? "target" | throwError
           s!"Assign node does not have a 'target' field or it is not a JSON value: {json}"
-        let .ok idStr := target.getObjValAs? String "id" | throwError
-          s!"Assign target does not have an 'id' field or it is not a string: {target}"
-        let nameIdent := mkIdent idStr.toName
+        let nameIdent ← getCode target `ident
         let .ok value := json.getObjVal? "value" | throwError
           s!"Assign node does not have a 'value' field or it is not a JSON value: {json}"
         let valueStx ← getCode value `term
@@ -80,6 +76,6 @@ def funcDefSyntax : (kind : SyntaxNodeKind) → Json →
     | kind, _ => throwError s!"Unsupported syntax category `{kind}` for FuncDef node"
 
 def f := fun n =>
-      let x := n +ₚ 1
+      let x := n -ₚ 1
       let y := x *ₚ 2
       x +ₚ y
