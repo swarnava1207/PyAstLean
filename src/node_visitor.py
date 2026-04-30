@@ -4,6 +4,26 @@ from pathlib import Path
 import subprocess
 import sys
 
+FUNCTION_DEF_SCHEMA = {
+    "node_type": "FunctionDef",
+    "name": "str",
+    "args": {
+        "node_type": "arguments",
+        "posonlyargs": ["arg"],
+        "args": ["arg"],
+        "vararg": "arg | None",
+        "kwonlyargs": ["arg"],
+        "kw_defaults": ["Json | None"],
+        "kwarg": "arg | None",
+        "defaults": ["Json"]
+    },
+    "body": ["Json"],
+    "decorator_list": ["Json"],
+    "returns": "Json | None",
+    "type_comment": "str | None",
+    "type_params": ["Json"]
+}
+
 class ASTToJsonLeanVisitorBase:
     def visit(self, node):
         """
@@ -86,32 +106,58 @@ class ASTToJsonLeanVisitorBase:
             "attr": node.attr
         }
 
+    def visit_Subscript(self, node):
+        """Translates ast.Subscript (e.g., list[int]) to a JSON IR node."""
+        return {
+            "node_type": "Subscript",
+            "value": self.visit(node.value),
+            "slice": self.visit(node.slice)
+        }
+
+    def visit_Tuple(self, node):
+        """Translates ast.Tuple (e.g., tuple slices) to a JSON IR node."""
+        return {
+            "node_type": "Tuple",
+            "elts": [self.visit(elt) for elt in node.elts]
+        }
+
     def visit_FunctionDef(self, node):
         """Translates ast.FunctionDef to a JSON IR node."""
-        if node.decorator_list:
-            raise NotImplementedError("Function decorators are not supported.")
-        if node.returns is not None:
-            raise NotImplementedError("Function return annotations are not supported.")
-        if getattr(node, "type_params", []):
-            raise NotImplementedError("Function type parameters are not supported.")
-        if node.args.posonlyargs:
-            raise NotImplementedError("Positional-only arguments are not supported.")
-        if node.args.vararg is not None:
-            raise NotImplementedError("Variadic positional arguments are not supported.")
-        if node.args.kwonlyargs:
-            raise NotImplementedError("Keyword-only arguments are not supported.")
-        if node.args.kwarg is not None:
-            raise NotImplementedError("Variadic keyword arguments are not supported.")
-        if node.args.defaults or node.args.kw_defaults:
-            raise NotImplementedError("Default argument values are not supported.")
-
-        args_json = [arg.arg for arg in node.args.args]
         body_json = [self.visit(stmt) for stmt in node.body]
         return {
             "node_type": "FunctionDef",
             "name": node.name,
-            "args": args_json,
-            "body": body_json
+            "args": self.visit(node.args),
+            "body": body_json,
+            "decorator_list": [self.visit(decorator) for decorator in node.decorator_list],
+            "returns": self.visit(node.returns) if node.returns is not None else None,
+            "type_comment": node.type_comment,
+            "type_params": [self.visit(type_param) for type_param in getattr(node, "type_params", [])]
+        }
+
+    def visit_arguments(self, node):
+        """Translates ast.arguments to a JSON IR node."""
+        return {
+            "node_type": "arguments",
+            "posonlyargs": [self.visit(arg) for arg in node.posonlyargs],
+            "args": [self.visit(arg) for arg in node.args],
+            "vararg": self.visit(node.vararg) if node.vararg is not None else None,
+            "kwonlyargs": [self.visit(arg) for arg in node.kwonlyargs],
+            "kw_defaults": [
+                self.visit(default) if default is not None else None
+                for default in node.kw_defaults
+            ],
+            "kwarg": self.visit(node.kwarg) if node.kwarg is not None else None,
+            "defaults": [self.visit(default) for default in node.defaults]
+        }
+
+    def visit_arg(self, node):
+        """Translates ast.arg to a JSON IR node."""
+        return {
+            "node_type": "arg",
+            "arg": node.arg,
+            "annotation": self.visit(node.annotation) if node.annotation is not None else None,
+            "type_comment": node.type_comment
         }
 
     def visit_Assign(self, node):
