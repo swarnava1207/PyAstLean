@@ -57,6 +57,9 @@ def withoutCheck {α : Type} (x : PygenM α) : PygenM α :=
 def withUseArrow {α : Type} (x : PygenM α) : PygenM α :=
   withPygenStateField (·.useArrow) (fun st useArrow => { st with useArrow := useArrow }) true x
 
+def withFixedVariables {α : Type} (x : PygenM α) : PygenM α := do
+  withPygenStateField (·.varNames) (fun st varNames => { st with varNames := varNames }) (← get).varNames x
+
 def isCheckEnabled : PygenM Bool := do
   return (← get).checkExr
 
