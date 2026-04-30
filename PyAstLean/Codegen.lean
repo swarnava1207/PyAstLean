@@ -16,11 +16,39 @@ namespace PyGen
 
 structure State where
   varNames : HashSet Name := HashSet.emptyWithCapacity 100
+  checkExr : Bool := true
+  useArrow : Bool := false
   deriving Inhabited, Repr
 
 end PyGen
 
+
+
 abbrev PygenM := StateT PyGen.State TermElabM
+
+def withPygenState {α : Type} (modifyState : PyGen.State → PyGen.State) (x : PygenM α) :
+    PygenM α := do
+  let saved ← get
+  set (modifyState saved)
+  try
+    let result ← x
+    set saved
+    return result
+  catch e =>
+    set saved
+    throw e
+
+def withoutCheck {α : Type} (x : PygenM α) : PygenM α :=
+  withPygenState (fun st => { st with checkExr := false }) x
+
+def withUseArrow {α : Type} (x : PygenM α) : PygenM α :=
+  withPygenState (fun st => { st with useArrow := true }) x
+
+def isCheckEnabled : PygenM Bool := do
+  return (← get).checkExr
+
+def isUseArrowEnabled : PygenM Bool := do
+  return (← get).useArrow
 
 instance : MonadEvalT PygenM TermElabM where
     monadEval := fun x => x.run' {}

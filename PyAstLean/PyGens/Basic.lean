@@ -182,17 +182,11 @@ def n₀ : Id Nat := 3
 @[pygen_transform term]
 def elabCheckTerm : (stx : TSyntax `term) → PygenM (TSyntax `term)
   | codeStx => do
+    unless ← isCheckEnabled do
+      return codeStx
     try
       let cmd ← `(command| example := $codeStx)
       liftCommandElabM <| Command.elabCommand cmd
-      -- withoutErrToSorry do
-      -- let codeTerm ← elabTerm codeStx none
-      -- -- let type ← inferType codeTerm
-      -- Term.synthesizeSyntheticMVarsUsingDefault
-      -- if codeTerm.hasMVar then
-      --   throwError s!"Generated code has metavariables, which means it is not fully elaborated: {codeTerm}"
-      -- -- IO.eprintln s!"Elaborated code: {codeTerm} with type {type}"
-      -- PrettyPrinter.delab codeTerm
       return codeStx
     catch e =>
       throwError s!"Error elaborating code: {← e.toMessageData.toString}"
