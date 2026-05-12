@@ -3,9 +3,12 @@ import sys
 import os
 import json
 import ast
+import atexit
 from pathlib import Path
 import subprocess
 import logging
+import threading
+from collections import deque
 sys.path.append(os.path.dirname(__file__))
 from node_visitor import *
 
@@ -54,31 +57,149 @@ def translate_to_json(source_code, filepath=None):
 
 parent_dir = Path(__file__).parent.parent
 
-def invoke_lean_backend(ast_json, target, check=True):
+class LeanBackendClient:
+    """Persistent line-oriented client for the Lean backend server mode."""
+
+    def __init__(self, cwd: Path):
+        self.cwd = cwd
+        self.proc = None
+        self._stderr_lines = deque(maxlen=200)
+        self._stderr_thread = None
+
+    @property
+    def binary_path(self):
+        return self.cwd / ".lake" / "build" / "bin" / "py2lean"
+
+    def _ensure_binary(self):
+        if self.binary_path.exists():
+            return
+        logger.debug("Building py2lean backend binary before starting server.")
+        build = subprocess.run(
+            ["lake", "build", "py2lean"],
+            cwd=self.cwd,
+            text=True,
+            capture_output=True,
+        )
+        if build.returncode != 0:
+            raise RuntimeError(build.stderr.strip() or build.stdout.strip() or "lake build py2lean failed")
+
+    def _command(self):
+        if self.binary_path.exists():
+            return ["lake", "env", str(self.binary_path), "--server"]
+        return ["lake", "exe", "py2lean", "--", "--server"]
+
+    def _drain_stderr(self):
+        assert self.proc is not None and self.proc.stderr is not None
+        for line in self.proc.stderr:
+            line = line.rstrip()
+            if not line:
+                continue
+            self._stderr_lines.append(line)
+            logger.debug("Lean backend stderr: %s", line)
+
+    def _recent_stderr(self):
+        return "\n".join(self._stderr_lines)
+
+    def start(self):
+        if self.proc is not None and self.proc.poll() is None:
+            return
+        self._ensure_binary()
+        cmd = self._command()
+        logger.debug("Starting persistent Lean backend: %s", cmd)
+        self.proc = subprocess.Popen(
+            cmd,
+            cwd=self.cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self._stderr_lines.clear()
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
+
+    def close(self):
+        if self.proc is None:
+            return
+        try:
+            if self.proc.stdin is not None:
+                self.proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        try:
+            self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=2)
+        finally:
+            if self.proc.stdout is not None:
+                self.proc.stdout.close()
+            if self.proc.stderr is not None:
+                self.proc.stderr.close()
+        self.proc = None
+        self._stderr_thread = None
+
+    def request(self, ast_json, target, check=True):
+        """Send one translation request to the persistent Lean backend."""
+        self.start()
+        assert self.proc is not None
+        assert self.proc.stdin is not None
+        assert self.proc.stdout is not None
+        json_task = json.dumps(
+            {"task": "translate", "ast": ast_json, "target": target, "check": check},
+            separators=(",", ":"),
+        )
+        logger.debug("Sending request to Lean backend: target=%s check=%s", target, check)
+        try:
+            self.proc.stdin.write(json_task + "\n")
+            self.proc.stdin.flush()
+        except BrokenPipeError:
+            self.close()
+            return {"result": False, "error": self._recent_stderr() or "Lean backend pipe closed unexpectedly"}
+
+        response_line = self.proc.stdout.readline()
+        if not response_line:
+            self.close()
+            return {
+                "result": False,
+                "error": self._recent_stderr() or "Lean backend terminated without responding",
+            }
+        response_line = response_line.strip()
+        logger.debug("Lean backend response: %s", response_line)
+        try:
+            return json.loads(response_line)
+        except json.JSONDecodeError as err:
+            return {
+                "result": False,
+                "error": f"Invalid JSON response from Lean backend: {err}\n{response_line}",
+            }
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+
+_LEAN_BACKEND = LeanBackendClient(parent_dir)
+atexit.register(_LEAN_BACKEND.close)
+
+
+def invoke_lean_backend(ast_json, target, check=True, client=None):
     """Send one JSON AST node to the Lean backend and return the parsed JSON response."""
-    json_task = json.dumps({"task": "translate", "ast": ast_json, "check": check})
-    # Prefer the built executable when present; otherwise fall back to `lake exe`.
-    py2lean_bin = parent_dir / ".lake" / "build" / "bin" / "py2lean"
-    cmd = [str(py2lean_bin), json_task, target] if py2lean_bin.exists() else ["lake", "exe", "py2lean", json_task, target]
-    logger.debug("Invoking Lean backend: %s", cmd)
-    proc = subprocess.Popen(
-        cmd,
-        cwd=parent_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    stdout, stderr = proc.communicate()
-    if stderr.strip():
-        logger.debug("Lean backend stderr:\n%s", stderr.strip())
-    if proc.returncode != 0:
-        return {"result": False, "error": stderr.strip() or "py2lean backend failed"}
-    return json.loads(stdout)
+    backend = client or _LEAN_BACKEND
+    try:
+        return backend.request(ast_json, target, check)
+    except Exception as err:
+        return {"result": False, "error": str(err)}
 
 def translate_to_lean(source_code, target="term", filepath = None):
     """Translate Python source to Lean via JSON IR and the Lean backend executable."""
     json_ir = translate_to_json(source_code, filepath)
     ast_json = json.loads(json_ir)
+    client = _LEAN_BACKEND
 
     if ast_json.get("node_type") == "Module":
         body = ast_json.get("body", [])
@@ -88,7 +209,7 @@ def translate_to_lean(source_code, target="term", filepath = None):
                 # A top-level Python `pass` is a true no-op, so there is no Lean command to emit.
                 if stmt.get("node_type") == "Pass":
                     continue
-                result = invoke_lean_backend(stmt, target, check=False)
+                result = invoke_lean_backend(stmt, target, check=False, client=client)
                 if result.get("result") is False:
                     return result
                 code_key = f"lean_{target}"
@@ -98,13 +219,13 @@ def translate_to_lean(source_code, target="term", filepath = None):
             return {"result": True, f"lean_{target}": "\n\n".join(code_parts)}
 
         if len(body) == 1:
-            return invoke_lean_backend(body[0], target)
+            return invoke_lean_backend(body[0], target, client=client)
         return {
             "result": False,
             "error": f"Target '{target}' only supports a single top-level statement; use --target command for full modules.",
         }
 
-    return invoke_lean_backend(ast_json, target)
+    return invoke_lean_backend(ast_json, target, client=client)
 
 def egProgram():
     return """def f(n):

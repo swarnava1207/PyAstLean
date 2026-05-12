@@ -23,7 +23,9 @@ That wrapper is responsible for:
 1. Reads the Python file.
 2. Runs the annotation pre-pass from `src/annotate_python.py`.
 3. Converts the Python AST to the JSON IR in `src/node_visitor.py`.
-4. Sends the JSON task to the Lean backend.
+4. Sends JSON translation requests to the Lean backend.
+5. Reuses one persistent Lean backend process for the lifetime of the Python process, so
+   module-level translation does not restart Lean for every top-level statement.
 
 ### Low-level Lean backend
 
@@ -45,6 +47,16 @@ Typical stdout:
 ```json
 {"result": true, "lean_term": "(1 : Int)"}
 ```
+
+The backend also supports a persistent server mode for tooling and performance-sensitive
+workflows:
+
+```bash
+lake env .lake/build/bin/py2lean --server
+```
+
+It accepts one compact JSON request per line on stdin and writes one compact JSON response
+per line on stdout. The Python wrapper uses this mode automatically.
 
 ## Installation
 

@@ -323,21 +323,25 @@ def runCases (cases : Array System.FilePath) : IO Unit := do
   if cases.isEmpty then
     throw <| IO.userError "PyLeanCheck: no test cases found."
   let mut failures : Array String := #[]
+  let mut totalTime := 0
   for casePath in cases do
     -- Timer
     let startTime ← IO.monoMsNow
     let caseOut ← runOneCase casePath
     let endTime ← IO.monoMsNow
     let duration := endTime - startTime
+    totalTime := totalTime + duration
     match caseOut with
     | .ok _ =>
-      IO.println s!"[PyLeanCheck] PASS {casePath} ({duration} ms)"
+      IO.println s!"[PALC] PASS {casePath} ({duration} ms)"
     | .error err =>
-      failures := failures.push s!"[PyLeanCheck] FAIL {err} ({duration} ms)"
+      failures := failures.push s!"[PALC] FAIL {err} ({duration} ms)"
   if failures.isEmpty then
-    IO.println s!"[PyLeanCheck] {cases.size} / {cases.size} cases passed."
+    IO.println s!"[PALC] {cases.size} / {cases.size} cases passed."
+    IO.println s!"[PALC] Total time: {totalTime} ms"
   else
-    IO.println s!"[PyLeanCheck] {failures.size} / {cases.size} cases failed."
+    IO.println s!"[PALC] {failures.size} / {cases.size} cases failed."
+    IO.println s!"[PALC] Total time: {totalTime} ms"
     throw <| IO.userError (String.intercalate "\n\n" failures.toList)
 
 def runPALCSuite : IO Unit := do
