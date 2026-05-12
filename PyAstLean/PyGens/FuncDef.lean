@@ -29,6 +29,35 @@ def f(n):
 ```
 -/
 
+def withFreshVariables {α : Type} (x : PygenM α) : PygenM α :=
+  withPygenStateField
+    (·.varNames)
+    (fun st varNames => { st with varNames := varNames })
+    (HashSet.emptyWithCapacity 100)
+    x
+
+@[pygen "Module"]
+def moduleSyntax : (kind : SyntaxNodeKind) → Json →
+    PygenM (TSyntax kind)
+    | `term, json => do
+        let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
+          s!"Module node does not have a 'body' field or it is not a JSON array: {json}"
+        let some first := bodyElems[0]? | throwError "Cannot translate an empty module to a term."
+        unless bodyElems.size == 1 do
+          throwError "Module-to-term translation requires exactly one top-level statement."
+        withFreshVariables do
+          getCode first `term
+    | `command, json => do
+        let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
+          s!"Module node does not have a 'body' field or it is not a JSON array: {json}"
+        let mut cmds : Array (TSyntax `command) := #[]
+        for elem in bodyElems do
+          let elemStx ← withFreshVariables do
+            getCode elem `command
+          cmds := cmds.push elemStx
+        return ⟨mkNullNode (cmds.map TSyntax.raw)⟩
+    | _, _ => throwError s!"Unsupported syntax category for Module node"
+
 @[pygen "Assign"]
 def assignSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)

@@ -48,22 +48,15 @@ def translate_to_json(source_code, filepath=None):
     logger.debug("Source passed to Python AST parser:\n%s", source_code)
     ast_tree = ast.parse(source_code)
     logger.debug("Parsed Python AST:\n%s", ast.dump(ast_tree, indent=4))
-    # Current limitation: the translator lowers only the first top-level statement.
-    data = translator.visit(ast_tree.body[0])  # Assuming we want to translate the first statement only
+    data = translator.visit(ast_tree)
     logger.debug("Generated JSON IR: %s", json.dumps(data))
     return json.dumps(data)
 
 parent_dir = Path(__file__).parent.parent
 
-def translate_to_lean(source_code, target="term", filepath = None):
-    """Translate Python source to Lean via JSON IR and the Lean backend executable.
-
-    Note: this function currently consumes `source_code` as-is. If we want the
-    `annotate_python.py` preprocessing stage to be mandatory, that hook still
-    needs to be added before `translate_to_json`.
-    """
-    json_ir = translate_to_json(source_code, filepath)
-    json_task = json.dumps({"task": "translate", "ast": json.loads(json_ir)})
+def invoke_lean_backend(ast_json, target, check=True):
+    """Send one JSON AST node to the Lean backend and return the parsed JSON response."""
+    json_task = json.dumps({"task": "translate", "ast": ast_json, "check": check})
     # Prefer the built executable when present; otherwise fall back to `lake exe`.
     py2lean_bin = parent_dir / ".lake" / "build" / "bin" / "py2lean"
     cmd = [str(py2lean_bin), json_task, target] if py2lean_bin.exists() else ["lake", "exe", "py2lean", json_task, target]
@@ -81,6 +74,34 @@ def translate_to_lean(source_code, target="term", filepath = None):
     if proc.returncode != 0:
         return {"result": False, "error": stderr.strip() or "py2lean backend failed"}
     return json.loads(stdout)
+
+def translate_to_lean(source_code, target="term", filepath = None):
+    """Translate Python source to Lean via JSON IR and the Lean backend executable."""
+    json_ir = translate_to_json(source_code, filepath)
+    ast_json = json.loads(json_ir)
+
+    if ast_json.get("node_type") == "Module":
+        body = ast_json.get("body", [])
+        if target == "command":
+            code_parts = []
+            for stmt in body:
+                result = invoke_lean_backend(stmt, target, check=False)
+                if result.get("result") is False:
+                    return result
+                code_key = f"lean_{target}"
+                if code_key not in result:
+                    return {"result": False, "error": f"Missing '{code_key}' in backend response."}
+                code_parts.append(result[code_key])
+            return {"result": True, f"lean_{target}": "\n\n".join(code_parts)}
+
+        if len(body) == 1:
+            return invoke_lean_backend(body[0], target)
+        return {
+            "result": False,
+            "error": f"Target '{target}' only supports a single top-level statement; use --target command for full modules.",
+        }
+
+    return invoke_lean_backend(ast_json, target)
 
 def egProgram():
     return """def f(n):

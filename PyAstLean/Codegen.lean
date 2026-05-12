@@ -253,9 +253,9 @@ def getCode (json: Json) (kind: SyntaxNodeKind) : PygenM <| TSyntax kind := do
   | some code => return code
   | none => throwError s!"pygen: no function found for key '{key}' and syntax category '{kind}'"
 
-def getCodeCore (json: Json) (kind: SyntaxNodeKind) : CoreM <| Except String Format := do
+def getCodeCore (json: Json) (kind: SyntaxNodeKind) (checkCode : Bool := true) : CoreM <| Except String Format := do
   try
-    let code := getCode json kind
+    let code := if checkCode then getCode json kind else withoutCheck <| getCode json kind
     let codeElab := code.run' {}
     let codeMeta := codeElab.run' {} {}
     let codeCore ← codeMeta.run' {} {}
@@ -264,9 +264,10 @@ def getCodeCore (json: Json) (kind: SyntaxNodeKind) : CoreM <| Except String For
   catch e =>
     return .error s!"Error generating code: {← e.toMessageData.toString}"
 
-def getCodeIO (json: Json) (kind: SyntaxNodeKind) (ctx : Core.Context) (env: Environment) :
+def getCodeIO (json: Json) (kind: SyntaxNodeKind) (ctx : Core.Context) (env: Environment)
+    (checkCode : Bool := true) :
   IO <| Except String Format := do
-  let code := getCodeCore json kind
+  let code := getCodeCore json kind checkCode
   let eio := code.run' ctx {env := env}
   match ← eio.toIO' with
   | .ok code =>

@@ -20,8 +20,9 @@ unsafe def main(args : List String) : IO Unit := do
       match task with
       | "translate" =>
         let target := args[1]?.getD "term"
+        let checkCode := jsonTask.getObjValAs? Bool "check" |>.toOption.getD true
         let .ok json := jsonTask.getObjValAs? Json "ast" | IO.throwServerError "Invalid JSON: missing 'ast' field or it is not a JSON value"
-        let code? ← getCodeIO json target.toName ctx env
+        let code? ← getCodeIO json target.toName ctx env checkCode
         match code? with
         | .ok code =>
           IO.eprintln s!"Successfully generated code for target: {target}"  -- Debugging output

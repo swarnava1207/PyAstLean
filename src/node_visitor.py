@@ -180,6 +180,13 @@ class ASTToJsonLeanVisitorBase:
             "elts": [self.visit(elt) for elt in node.elts]
         }
 
+    def visit_Module(self, node):
+        """Translates ast.Module to a JSON IR node."""
+        return {
+            "node_type": "Module",
+            "body": [self.visit(stmt) for stmt in node.body]
+        }
+
     def visit_FunctionDef(self, node):
         """Translates ast.FunctionDef to a JSON IR node."""
         body_json = [self.visit(stmt) for stmt in node.body]

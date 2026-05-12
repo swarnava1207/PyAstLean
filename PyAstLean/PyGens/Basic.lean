@@ -336,7 +336,10 @@ def elabCheckCmd : (stx : TSyntax `command) → PygenM (TSyntax `command)
     unless ← isCheckEnabled do
       return cmd
     try
-      liftCommandElabM <| Command.elabCommand cmd
+      if cmd.raw.isOfKind nullKind then
+        return cmd
+      else
+        liftCommandElabM <| Command.elabCommand cmd
       -- IO.eprintln s!"Successfully elaborated command: {← PrettyPrinter.ppCommand cmd}"  -- Debugging output
       return cmd
     catch e =>
