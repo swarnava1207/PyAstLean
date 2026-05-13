@@ -21,8 +21,11 @@ unsafe def initBackend : IO (Core.Context × Environment) := do
 def errorResponse (message : String) : Json :=
   Json.mkObj [("result", Json.bool false), ("error", Json.str message)]
 
+def sanitizeLeanOutput (code : String) : String :=
+  code.replace "✝" ""
+
 def successResponse (target : String) (code : Format) : Json :=
-  Json.mkObj [("result", Json.bool true), ("lean_" ++ target, Json.str code.pretty)]
+  Json.mkObj [("result", Json.bool true), ("lean_" ++ target, Json.str <| sanitizeLeanOutput code.pretty)]
 
 def ensureTarget (jsonTask : Json) (target : String) : Json :=
   match jsonTask.getObjVal? "target" with

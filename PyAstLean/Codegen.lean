@@ -22,8 +22,6 @@ structure State where
 
 end PyGen
 
-
-
 abbrev PygenM := StateT PyGen.State TermElabM
 
 def withPygenState {α : Type} (modifyState : PyGen.State → PyGen.State) (x : PygenM α) :

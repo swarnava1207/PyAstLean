@@ -4,6 +4,8 @@ open Lean Meta Elab Term Qq Std
 
 namespace PyAstLean
 
+open Lean.Parser.Term
+
 /-- Extract the node type tag from a structural pattern JSON node. -/
 def matchPatternNodeType (patternJson : Json) : PygenM String := do
   let .ok nodeType := patternJson.getObjValAs? String "node_type" | throwError
@@ -53,6 +55,111 @@ partial def isIrrefutableMatchPattern (patternJson : Json) : Bool :=
       | .ok patterns => patterns.toList.any isIrrefutableMatchPattern
       | _ => false
   | _ => false
+
+/-- Check whether a pattern can be represented directly as a Lean pattern. -/
+partial def canLowerDirectMatchPattern (patternJson : Json) : Bool :=
+  match patternJson.getObjValAs? String "node_type" with
+  | .ok "MatchValue" => true
+  | .ok "MatchSingleton" => true
+  | .ok "MatchAs" =>
+      match jsonFieldOption patternJson "pattern" with
+      | none => true
+      | some inner => canLowerDirectMatchPattern inner
+  | .ok "MatchOr" =>
+      match patternJson.getObjValAs? (Array Json) "patterns" with
+      | .ok patterns => patterns.toList.all canLowerDirectMatchPattern
+      | _ => false
+  | .ok "MatchSequence" =>
+      match patternJson.getObjValAs? (Array Json) "patterns" with
+      | .ok patterns => patterns.size == 2 && patterns.toList.all canLowerDirectMatchPattern
+      | _ => false
+  | _ => false
+
+/-- Check whether a case can use direct Lean `match` lowering instead of the `if` fallback. -/
+def canLowerDirectMatchCase (caseJson : Json) : Bool :=
+  match caseJson.getObjValAs? Json "pattern", jsonFieldOption caseJson "guard" with
+  | .ok patternJson, none => canLowerDirectMatchPattern patternJson
+  | _, _ => false
+
+/-- Use direct Lean `match` syntax when every case is an unguarded structural pattern we know how to lower. -/
+def canUseDirectLeanMatch (cases : List Json) : Bool :=
+  !cases.isEmpty && cases.all canLowerDirectMatchCase
+
+/-- Build the cartesian product of tuple subpatterns when lowering `MatchSequence`. -/
+def tuplePatternProducts (lhs rhs : Array (TSyntax `term)) : PygenM (Array (TSyntax `term)) := do
+  let mut out := #[]
+  for l in lhs do
+    for r in rhs do
+      out := out.push (← `(term| ($l, $r)))
+  return out
+
+/-- Expand a Python pattern into one or more direct Lean patterns. `MatchOr` becomes several branches. -/
+partial def directLeanMatchPatterns (patternJson : Json) : PygenM (Array (TSyntax `term)) := do
+  let nodeType ← matchPatternNodeType patternJson
+  match nodeType with
+  | "MatchValue" =>
+      let .ok valueJson := patternJson.getObjValAs? Json "value" | throwError
+        s!"MatchValue node is missing a 'value' field: {patternJson}"
+      return #[← getCode valueJson `term]
+  | "MatchSingleton" =>
+      let .ok valueJson := patternJson.getObjValAs? Json "value" | throwError
+        s!"MatchSingleton node is missing a 'value' field: {patternJson}"
+      return #[← getCode (Json.mkObj [("node_type", Json.str "Constant"), ("value", valueJson)]) `term]
+  | "MatchAs" =>
+      let name? := patternJson.getObjValAs? String "name" |>.toOption
+      let pattern? := jsonFieldOption patternJson "pattern"
+      match pattern?, name? with
+      | none, none =>
+          return #[← `(term| _)]
+      | none, some name =>
+          return #[mkIdent name.toName]
+      | some inner, none =>
+          directLeanMatchPatterns inner
+      | some _, some _ =>
+          throwError "Aliased match patterns are not yet supported in direct Lean match lowering."
+  | "MatchOr" =>
+      let .ok patternsJson := patternJson.getObjValAs? (Array Json) "patterns" | throwError
+        s!"MatchOr node is missing a 'patterns' field: {patternJson}"
+      let mut out := #[]
+      for alt in patternsJson do
+        out := out ++ (← directLeanMatchPatterns alt)
+      return out
+  | "MatchSequence" =>
+      let .ok patternsJson := patternJson.getObjValAs? (Array Json) "patterns" | throwError
+        s!"MatchSequence node is missing a 'patterns' field: {patternJson}"
+      unless patternsJson.size == 2 do
+        throwError "Only 2-element MatchSequence patterns are currently supported."
+      let lhs ← directLeanMatchPatterns patternsJson[0]!
+      let rhs ← directLeanMatchPatterns patternsJson[1]!
+      tuplePatternProducts lhs rhs
+  | _ =>
+      throwError s!"Pattern node type {nodeType} is not supported for direct Lean match lowering."
+
+/-- Build one pure Lean match alternative from a Python case body. -/
+def directLeanMatchTermAlt (pattern : TSyntax `term) (bodyElemsJson : Array Json) (rest : List Json) :
+    PygenM (TSyntax `Lean.Parser.Term.matchAlt) := do
+  let bodyTerm ← matchSplitListOrPureUnit (bodyElemsJson.toList ++ rest)
+  `(matchAltExpr| | $pattern:term => $bodyTerm)
+
+/-- Lower a Python `match` into a direct Lean `match` term when the patterns are simple enough. -/
+def directLeanMatchTermSyntax (subject : TSyntax `term) (cases : List Json) (rest : List Json) :
+    PygenM (TSyntax `term) := do
+  let mut alts : Array (TSyntax `Lean.Parser.Term.matchAlt) := #[]
+  let mut exhaustive := false
+  for caseJson in cases do
+    let .ok patternJson := caseJson.getObjValAs? Json "pattern" | throwError
+      s!"match_case node does not have a 'pattern' field: {caseJson}"
+    let .ok bodyElemsJson := caseJson.getObjValAs? (Array Json) "body" | throwError
+      s!"match_case node does not have a 'body' field: {caseJson}"
+    let patterns ← directLeanMatchPatterns patternJson
+    for pattern in patterns do
+      alts := alts.push (← directLeanMatchTermAlt pattern bodyElemsJson rest)
+    if isIrrefutableMatchPattern patternJson then
+      exhaustive := true
+  if !exhaustive then
+    let fallbackBody ← matchSplitListOrPureUnit rest
+    alts := alts.push (← `(matchAltExpr| | _ => $fallbackBody))
+  `(term| match $subject:term with $alts:matchAlt*)
 
 /-- Convert a match pattern into a boolean condition plus any names it binds. -/
 partial def matchPatternConditionBindings (subject : TSyntax `term) (patternJson : Json) :
@@ -159,28 +266,38 @@ partial def matchCaseDoElemSyntax (subject : TSyntax `term) (cases : List Json) 
 /-- Lower a Python `match` expression-ish head into nested pure `if` terms. -/
 partial def matchCaseTermSyntax (subject : TSyntax `term) (cases : List Json) (rest : List Json) :
     PygenM (TSyntax `term) := do
-  match cases with
-  | [] => matchSplitListOrPureUnit rest
-  | caseJson :: restCases => do
-      let .ok patternJson := caseJson.getObjValAs? Json "pattern" | throwError
-        s!"match_case node does not have a 'pattern' field: {caseJson}"
-      let guard? := jsonFieldOption caseJson "guard"
-      let .ok bodyElemsJson := caseJson.getObjValAs? (Array Json) "body" | throwError
-        s!"match_case node does not have a 'body' field: {caseJson}"
-      let (cond, bindings) ← matchPatternConditionBindings subject patternJson
-      let nextCase ← matchCaseTermSyntax subject restCases rest
-      let caseBody ← matchSplitListOrPureUnit (bodyElemsJson.toList ++ rest)
-      let branchBody ← match guard? with
-        | none =>
-            matchWrapBindingsTerm bindings caseBody
-        | some guardJson =>
-            let guardTerm ← getCode guardJson `term
-            let guardedBody ← `(if $guardTerm then $caseBody else $nextCase)
-            matchWrapBindingsTerm bindings guardedBody
-      if restCases.isEmpty && guard?.isNone && isIrrefutableMatchPattern patternJson then
-        pure branchBody
-      else
-        `(if $cond then $branchBody else $nextCase)
+  if !rest.isEmpty &&
+      cases.any (fun caseJson =>
+        match caseJson.getObjValAs? (Array Json) "body" with
+        | .ok bodyElems => !statementListDefinitelyReturns bodyElems.toList
+        | .error _ => true) then
+    throwError
+      "Match branches that fall through into later statements require monadic lowering."
+  else if canUseDirectLeanMatch cases then
+    directLeanMatchTermSyntax subject cases rest
+  else
+    match cases with
+    | [] => matchSplitListOrPureUnit rest
+    | caseJson :: restCases => do
+        let .ok patternJson := caseJson.getObjValAs? Json "pattern" | throwError
+          s!"match_case node does not have a 'pattern' field: {caseJson}"
+        let guard? := jsonFieldOption caseJson "guard"
+        let .ok bodyElemsJson := caseJson.getObjValAs? (Array Json) "body" | throwError
+          s!"match_case node does not have a 'body' field: {caseJson}"
+        let (cond, bindings) ← matchPatternConditionBindings subject patternJson
+        let nextCase ← matchCaseTermSyntax subject restCases rest
+        let caseBody ← matchSplitListOrPureUnit (bodyElemsJson.toList ++ rest)
+        let branchBody ← match guard? with
+          | none =>
+              matchWrapBindingsTerm bindings caseBody
+          | some guardJson =>
+              let guardTerm ← getCode guardJson `term
+              let guardedBody ← `(if $guardTerm then $caseBody else $nextCase)
+              matchWrapBindingsTerm bindings guardedBody
+        if restCases.isEmpty && guard?.isNone && isIrrefutableMatchPattern patternJson then
+          pure branchBody
+        else
+          `(if $cond then $branchBody else $nextCase)
 
 @[pygen "Match"]
 def matchSyntax : (kind : SyntaxNodeKind) → Json →

@@ -57,6 +57,37 @@ def functionBodyElems (json : Json) : PygenM (Array Json) := do
     s!"FuncDef node does not have a 'body' field or it is not a JSON value: {json}"
   return bodyElems
 
+/-- Build the Lean value for a Python function body, using a pure term when possible and
+falling back to `do` notation for effectful bodies. This helper is reused for top-level
+definitions, nested local functions, and `Head_FunctionDef` threading. -/
+def functionValueSyntax (argIdents : Array (TSyntax `ident)) (bodyElems : Array Json) :
+    PygenM (TSyntax `term) := do
+  let usesExceptions := bodyNeedsExceptionMonad bodyElems
+  try
+    let bodyStx ← pureFunctionBodySyntax bodyElems
+    if argIdents.isEmpty then
+      pure bodyStx
+    else
+      `(fun $argIdents* ↦ $bodyStx)
+  catch e =>
+    IO.eprintln s!"Could not generate pure function term: {← e.toMessageData.toString}"
+    let bodyStxArray ← monadicFunctionBodySyntax bodyElems
+    if usesExceptions then
+      if argIdents.isEmpty then
+        `(do
+            $[$bodyStxArray:doElem]*)
+      else
+        `(fun $argIdents* ↦ do
+            $[$bodyStxArray:doElem]*)
+    else
+      let idRunIdent := mkIdent ``Id.run
+      if argIdents.isEmpty then
+        `($idRunIdent do
+            $[$bodyStxArray:doElem]*)
+      else
+        `(fun $argIdents* ↦ $idRunIdent do
+            $[$bodyStxArray:doElem]*)
+
 @[pygen "FunctionDef"]
 def funcDefSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
@@ -66,46 +97,20 @@ def funcDefSyntax : (kind : SyntaxNodeKind) → Json →
         let nameIdent := mkIdent name.toName
         let argIdents ← functionArgIdents json
         let bodyElems ← functionBodyElems json
-        let usesExceptions := bodyNeedsExceptionMonad bodyElems
-        try
-          let bodyStx ← pureFunctionBodySyntax bodyElems
-          let t ← `(def $nameIdent := fun $argIdents* ↦ $bodyStx)
-          return t
-        catch e =>
-          IO.eprintln s!"Could not generate pure function: {← e.toMessageData.toString}"
-        let bodyStxArray ← monadicFunctionBodySyntax bodyElems
-        if usesExceptions then
-          if argIdents.isEmpty then
-            `(def $nameIdent := do
-                $[$bodyStxArray:doElem]*)
-          else
-            `(def $nameIdent := fun $argIdents* ↦ do
-                $[$bodyStxArray:doElem]*)
-        else
-          let idRunIdent := mkIdent ``Id.run
-          if argIdents.isEmpty then
-            `(def $nameIdent := $idRunIdent do
-                $[$bodyStxArray:doElem]*)
-          else
-            `(def $nameIdent := fun $argIdents* ↦ $idRunIdent do
-                $[$bodyStxArray:doElem]*)
+        let valueStx ← functionValueSyntax argIdents bodyElems
+        `(def $nameIdent := $valueStx)
     | `term, json => do
         let argIdents ← functionArgIdents json
         let bodyElems ← functionBodyElems json
-        let usesExceptions := bodyNeedsExceptionMonad bodyElems
-        try
-          let bodyStx ← pureFunctionBodySyntax bodyElems
-          `(fun $argIdents* ↦ $bodyStx)
-        catch e =>
-          IO.eprintln s!"Could not generate pure function term: {← e.toMessageData.toString}"
-          let bodyStxArray ← monadicFunctionBodySyntax bodyElems
-          if usesExceptions then
-            `(fun $argIdents* ↦ do
-                $[$bodyStxArray:doElem]*)
-          else
-            let idRunIdent := mkIdent ``Id.run
-            `(fun $argIdents* ↦ $idRunIdent do
-                $[$bodyStxArray:doElem]*)
+        functionValueSyntax argIdents bodyElems
+    | `doElem, json => do
+        let .ok name := json.getObjValAs? String "name" | throwError
+          s!"FuncDef node does not have a 'name' field or it is not a string: {json}"
+        let nameIdent := mkIdent name.toName
+        let argIdents ← functionArgIdents json
+        let bodyElems ← functionBodyElems json
+        let valueStx ← functionValueSyntax argIdents bodyElems
+        `(doElem| let $nameIdent := $valueStx)
     | kind, _ => throwError s!"Unsupported syntax category `{kind}` for FuncDef node"
 
 @[pygen "Head_Assign"]
@@ -157,6 +162,25 @@ def passHeadSyntax : (kind : SyntaxNodeKind) → Json →
           getCode splitRest `term
     | _, _ => throwError s!"Unsupported syntax category for Head_Pass node"
 
+@[pygen "Head_FunctionDef"]
+def functionDefHeadSyntax : (kind : SyntaxNodeKind) → Json →
+    PygenM (TSyntax kind)
+    | `term, json => do
+        let .ok name := json.getObjValAs? String "name" | throwError
+          s!"FuncDef node does not have a 'name' field or it is not a string: {json}"
+        let nameIdent := mkIdent name.toName
+        let argIdents ← functionArgIdents json
+        let bodyElems ← functionBodyElems json
+        let .ok rest := json.getObjValAs? (List Json) "rest" | throwError
+          s!"FuncDef node does not have a 'rest' field or it is not a JSON value: {json}"
+        let valueStx ← functionValueSyntax argIdents bodyElems
+        let splitRest ← splitList rest
+        let tailCode ← withoutCheck do
+          getCode splitRest `term
+        `(let $nameIdent := $valueStx
+          $tailCode)
+    | _, _ => throwError s!"Unsupported syntax category for Head_FunctionDef node"
+
 @[pygen "Head_If"]
 def ifHeadSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
@@ -169,6 +193,11 @@ def ifHeadSyntax : (kind : SyntaxNodeKind) → Json →
           s!"If node does not have an 'orelse' field or it is not a JSON array: {json}"
         let .ok rest := json.getObjValAs? (List Json) "rest" | throwError
           s!"If node does not have a 'rest' field or it is not a JSON value: {json}"
+        if !rest.isEmpty &&
+            (!statementListDefinitelyReturns bodyElems.toList ||
+              !statementListDefinitelyReturns orelseElems.toList) then
+          throwError
+            "If branches that fall through into later statements require monadic lowering."
         let testStx ← getCode testJson `term
         let thenBranch ← withoutCheck do
           let splitThen ← splitList (bodyElems.toList ++ rest)

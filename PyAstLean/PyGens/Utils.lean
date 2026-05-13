@@ -62,6 +62,10 @@ def trueTerm : TSyntax `term := mkIdent ``true
 
 def falseTerm : TSyntax `term := mkIdent ``false
 
+/-- Read the `node_type` tag from a JSON AST node when present. -/
+def jsonNodeType? (json : Json) : Option String :=
+  json.getObjValAs? String "node_type" |>.toOption
+
 /--
 Reformat a list of Json to an object with `node_type` the `node_type` of the original list's
 first element with "Head_" prefixed, and `rest` the remaining statements.
@@ -81,6 +85,25 @@ def pureFunctionBodySyntax (bodyElems : Array Json) : PygenM (TSyntax `term) := 
   let spl ← splitList bodyElems.toList
   withoutCheck do
     getCode spl `term
+
+/--
+Check whether a statement list definitely returns on every path without needing any outer
+continuation. This is used to decide whether nested control-flow can stay in the pure
+threaded lowering, or whether we should fall back to the monadic statement path instead.
+-/
+partial def statementListDefinitelyReturns : List Json → Bool
+| [] => false
+| stmt :: rest =>
+    match jsonNodeType? stmt with
+    | some "Return" => true
+    | some "If" =>
+        match stmt.getObjValAs? (Array Json) "body", stmt.getObjValAs? (Array Json) "orelse" with
+        | .ok bodyElems, .ok orelseElems =>
+            !orelseElems.isEmpty &&
+              statementListDefinitelyReturns bodyElems.toList &&
+              statementListDefinitelyReturns orelseElems.toList
+        | _, _ => false
+    | _ => statementListDefinitelyReturns rest
 
 /-- Compile a function body statement-by-statement into `doElem`s for the monadic fallback path. -/
 def monadicFunctionBodySyntax (bodyElems : Array Json) : PygenM (Array (TSyntax `doElem)) := do
