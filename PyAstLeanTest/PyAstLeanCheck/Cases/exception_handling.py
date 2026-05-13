@@ -1,5 +1,19 @@
 # PYASTLEANCHECK START
-# CHECK: 
+# TARGET: command
+# CHECK: def simple_catch :=
+# CHECK: try
+# CHECK: catch caught =>
+# CHECK: String.startsWith caught "Exception:"
+# CHECK: def fixed_catch :=
+# CHECK: String.startsWith caught "ZeroDivisionError:"
+# CHECK: def try_with_else_finally := fun num ↦
+# CHECK: finally
+# CHECK: print "Finally block executed"
+# CHECK: def raise_error := fun num ↦
+# CHECK: throw✝ (String.append "ValueError: "
+# CHECK: throw✝ (String.append "ZeroDivisionError: "
+# CHECK: def catch_loop := fun num ↦
+# CHECK: for i in PyAstLean.pyRange num do
 # PYASTLEANCHECK END
 
 def simple_catch():
@@ -64,4 +78,3 @@ def catch_loop(num):
             print(f"Caught ValueError at i={i}: {e}")
         except ZeroDivisionError as e:
             print(f"Caught ZeroDivisionError at i={i}: {e}")
-

@@ -7,6 +7,8 @@ BINOP_MAP = {
     ast.Sub: "sub",
     ast.Mult: "mul",
     ast.Pow: "pow",
+    ast.Div: "div",
+    ast.BitOr: "bitor",
 }
 
 BOOLOP_MAP = {
@@ -437,6 +439,14 @@ class ASTToJsonLeanVisitorBase:
             "handlers": [self.visit(handler) for handler in node.handlers],
             "orelse": self.visit_statements(node.orelse),
             "finalbody": self.visit_statements(node.finalbody)
+        }
+
+    def visit_Raise(self, node):
+        """Translates ast.Raise to a JSON IR node."""
+        return {
+            "node_type": "Raise",
+            "exc": None if node.exc is None else self.visit(node.exc),
+            "cause": None if node.cause is None else self.visit(node.cause),
         }
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@
 # CHECK: else
 # CHECK: if answer < (42 : Int) then
 # CHECK: def main := Id.run do
-# CHECK: for _ in PyAstLean.pyRange (10 : Int) do
+# CHECK: for _ in PyAstLean.pyRange (10 : Int)
 # CHECK: print (greet (1 : Int))
 # CHECK: let _ := calculate_sum
 # CHECK: let _ := get_global

@@ -214,6 +214,27 @@ instance(priority := high) : PyHPow Rat Int Rat where
 instance(priority := high) : Neg Rat where
   neg := fun a => - (a : Rat)
 
+class PyHDiv (α β : Type) (γ : outParam Type) where
+  hDiv : α → β → γ
+
+infix:70 " /ₚ " => PyHDiv.hDiv
+
+@[default_instance]
+instance {α β γ} [HDiv α β γ] : PyHDiv α β γ where
+  hDiv := HDiv.hDiv
+
+@[default_instance]
+instance (priority := high) : PyHDiv Int Int Rat where
+  hDiv := fun a b => (a : Rat) / (b : Rat)
+
+@[default_instance]
+instance (priority := high) : PyHDiv Nat Nat Rat where
+  hDiv := fun a b => (a : Rat) / (b : Rat)
+
+@[default_instance]
+instance (priority := high) : PyHDiv Rat Rat Rat where
+  hDiv := fun a b => (a : Rat) / (b : Rat)
+
 def pyRange (stop : Int) : List Int :=
   (List.range stop.toNat).map Int.ofNat
 
@@ -234,6 +255,7 @@ def binOpSyntax : (kind : SyntaxNodeKind) → Json →
     | "add" => `($leftCode +ₚ $rightCode)
     | "sub" => `($leftCode -ₚ $rightCode)
     | "mul" => `($leftCode *ₚ $rightCode)
+    | "div" => `($leftCode /ₚ $rightCode)
     | "pow" => `($leftCode ^ₚ $rightCode)
     | _ => throwError s!"Unsupported binary operator: {op}"
   | _, _ => throwError s!"Unsupported syntax category for BinOp node"

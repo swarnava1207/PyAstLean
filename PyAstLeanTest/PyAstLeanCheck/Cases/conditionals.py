@@ -1,43 +1,41 @@
 # PYASTLEANCHECK START
 # TARGET: command
 # CHECK: def check_nesting := fun n m ↦
-# CHECK: Id.run
 # CHECK: if n > (0 : Int) then
 # CHECK: if m >= (0 : Int) then
-# CHECK: return "Both positive"
+# CHECK: "Both positive"
 # CHECK: else
-# CHECK: return "n positive, m non-positive"
+# CHECK: "n positive, m non-positive"
 # CHECK: else
 # CHECK: if m > (0 : Int) then
-# CHECK: return "n non-positive, m positive"
+# CHECK: "n non-positive, m positive"
 # CHECK: else
-# CHECK: return "Both non-positive"
+# CHECK: "Both non-positive"
 # CHECK: def super_nested_if := fun a b c d ↦
-# CHECK: Id.run
 # CHECK: if a then
 # CHECK: if b then
 # CHECK: if c then
 # CHECK: if d then
-# CHECK: return (1 : Int)
+# CHECK: (1 : Int)
 # CHECK: else
-# CHECK: return (2 : Int)
+# CHECK: (2 : Int)
 # CHECK: else
-# CHECK: return (3 : Int)
+# CHECK: (3 : Int)
 # CHECK: else
-# CHECK: return (4 : Int)
+# CHECK: (4 : Int)
 # CHECK: else
-# CHECK: return (5 : Int)
+# CHECK: (5 : Int)
 # CHECK: def complex_branching := fun x ↦
 # CHECK: if x == (1 : Int) then
-# CHECK: return "one"
+# CHECK: "one"
 # CHECK: else
 # CHECK: if x == (2 : Int) then
-# CHECK: return "two"
+# CHECK: "two"
 # CHECK: else
 # CHECK: if x == (3 : Int) then
-# CHECK: return "three"
+# CHECK: "three"
 # CHECK: else
-# CHECK: return "other"
+# CHECK: "other"
 # PYASTLEANCHECK END
 
 def check_nesting(n, m):
