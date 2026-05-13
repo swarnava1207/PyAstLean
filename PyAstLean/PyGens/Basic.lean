@@ -4,6 +4,8 @@ open Lean Meta Elab Term Qq Std
 
 namespace PyAstLean
 
+#map_names [print → pyPrint]
+
 def intToStx (n : Int) : MetaM <| TSyntax `term := do
   if n < 0 then
     let nStx := Syntax.mkNumLit (toString (-n))
@@ -341,7 +343,12 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
       s!"Call node does not have a 'func' field or it is not a JSON value: {json}"
     let .ok argsJson := json.getObjValAs? Json "args" | throwError
       s!"Call node does not have an 'args' field or it is not a JSON value: {json}"
-    let funcCode ← getCode funcJson `term
+    let funcCode : TSyntax `term ← match funcJson.getObjValAs? String "node_type", funcJson.getObjValAs? String "id" with
+      | .ok "Name", .ok funcName =>
+          let mappedName ← leanName funcName.toName
+          pure <| (mkIdent mappedName : TSyntax `term)
+      | _, _ =>
+          getCode funcJson `term
     let mut t ← `($funcCode)
     let argsCodes ← match argsJson with
       | .arr arr => arr.mapM (fun argJson => getCode argJson `term)
@@ -362,7 +369,12 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
       s!"Call node does not have a 'func' field or it is not a JSON value: {json}"
     let .ok argsJson := json.getObjValAs? Json "args" | throwError
       s!"Call node does not have an 'args' field or it is not a JSON value: {json}"
-    let funcCode ← getCode funcJson `term
+    let funcCode : TSyntax `term ← match funcJson.getObjValAs? String "node_type", funcJson.getObjValAs? String "id" with
+      | .ok "Name", .ok funcName =>
+          let mappedName ← leanName funcName.toName
+          pure <| (mkIdent mappedName : TSyntax `term)
+      | _, _ =>
+          getCode funcJson `term
     let mut t ← `($funcCode)
     let argsCodes ← match argsJson with
       | .arr arr => arr.mapM (fun argJson => getCode argJson `term)
