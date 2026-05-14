@@ -1,18 +1,25 @@
 # PYASTLEANCHECK START
 # TARGET: command
-# CHECK: def add := fun a b ↦
+# CHECK: def add := fun a ↦
+# CHECK: fun b ↦
 # CHECK: a +ₚ b
 # CHECK: def call_add := fun n ↦
 # CHECK: (add n) (1 : Int)
 # CHECK: def keyword_call := fun n ↦
 # CHECK: (add (a := n)) (b := (2 : Int))
-# CHECK: def many_args := fun a b c d e ↦
+# CHECK: def many_args := fun a ↦
+# CHECK: fun b ↦
+# CHECK: fun c ↦
+# CHECK: fun d ↦
+# CHECK: fun e ↦
 # CHECK: (((a +ₚ b) +ₚ c) +ₚ d) +ₚ e
-# CHECK: def complex_func := fun x y z ↦
+# CHECK: def complex_func := fun x ↦
+# CHECK: fun y ↦
+# CHECK: fun z ↦
 # CHECK: Id.run
 # CHECK: let mut res := x *ₚ y
 # CHECK: res := res +ₚ z
-# CHECK: return (res)
+# CHECK: return res
 # PYASTLEANCHECK END
 
 def add(a, b):

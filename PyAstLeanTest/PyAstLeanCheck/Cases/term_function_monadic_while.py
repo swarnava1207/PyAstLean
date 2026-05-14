@@ -5,7 +5,7 @@
 # CHECK: let mut total := (0 : Int)
 # CHECK: while total < n do
 # CHECK: total := total +ₚ (1 : Int)
-# CHECK: return (total)
+# CHECK: return total
 # PYASTLEANCHECK END
 
 def count_to(n):

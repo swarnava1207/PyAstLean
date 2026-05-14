@@ -6,7 +6,7 @@
 # CHECK: for i in PyAstLean.pyRange n do
 # CHECK: for j in PyAstLean.pyRange i do
 # CHECK: total := total +ₚ j
-# CHECK: return (total)
+# CHECK: return total
 # CHECK: def super_nested_loops := fun n ↦
 # CHECK: Id.run
 # CHECK: let mut res := (0 : Int)
@@ -15,7 +15,7 @@
 # CHECK: for k in PyAstLean.pyRange n do
 # CHECK: for l in PyAstLean.pyRange n do
 # CHECK: res := res +ₚ (((i +ₚ j) +ₚ k) +ₚ l)
-# CHECK: return (res)
+# CHECK: return res
 # CHECK: def while_in_for := fun n ↦
 # CHECK: Id.run
 # CHECK: let mut count := (0 : Int)
@@ -24,7 +24,7 @@
 # CHECK: while j > (0 : Int) do
 # CHECK: count := count +ₚ (1 : Int)
 # CHECK: j := j -ₚ (1 : Int)
-# CHECK: return (count)
+# CHECK: return count
 # CHECK: def breakable_loop := fun n ↦
 # CHECK: Id.run
 # CHECK: let mut total := (0 : Int)
@@ -38,7 +38,7 @@
 # CHECK: continue
 # CHECK: total := total +ₚ j
 # CHECK: j := j +ₚ (1 : Int)
-# CHECK: return (total)
+# CHECK: return total
 # PYASTLEANCHECK END
 
 def nested_loops(n):

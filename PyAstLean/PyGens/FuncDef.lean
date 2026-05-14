@@ -40,17 +40,62 @@ def moduleSyntax : (kind : SyntaxNodeKind) → Json →
         return ⟨mkNullNode (cmds.map TSyntax.raw)⟩
     | _, _ => throwError s!"Unsupported syntax category for Module node"
 
-def functionArgIdents (json : Json) : PygenM (Array (TSyntax `ident)) := do
+/-- Map a simple Python annotation JSON node to a Lean type term when we know a direct runtime type. -/
+partial def functionArgTypeSyntax? (annotationJson : Json) : PygenM (Option (TSyntax `term)) := do
+  let .ok nodeType := annotationJson.getObjValAs? String "node_type" | throwError
+    s!"Function argument annotation is missing a 'node_type' field: {annotationJson}"
+  match nodeType with
+  | "Name" =>
+      let .ok id := annotationJson.getObjValAs? String "id" | throwError
+        s!"Function argument annotation is missing an 'id' field: {annotationJson}"
+      match id with
+      | "int" | "Int" => return some (mkIdent ``Int)
+      | "bool" | "Bool" => return some (mkIdent ``Bool)
+      | "str" | "String" => return some (mkIdent ``String)
+      | "float" | "Float" => return some (mkIdent ``Rat)
+      | "Any" => return none -- let Lean handle the type inference for now
+      | _ => return none
+  | "Subscript" =>
+      let .ok valueJson := annotationJson.getObjValAs? Json "value" | throwError
+        s!"Function argument subscript annotation is missing a 'value' field: {annotationJson}"
+      let .ok sliceJson := annotationJson.getObjValAs? Json "slice" | throwError
+        s!"Function argument subscript annotation is missing a 'slice' field: {annotationJson}"
+      match valueJson.getObjValAs? String "node_type", valueJson.getObjValAs? String "id" with
+      | .ok "Name", .ok "list" =>
+          match ← functionArgTypeSyntax? sliceJson with
+          | some elemTy => return some (← `(List $elemTy))
+          | none => return none
+      | .ok "Name", .ok "dict" =>
+          match sliceJson.getObjValAs? String "node_type" with
+          | .ok "Tuple" =>
+              let .ok elts := sliceJson.getObjValAs? (Array Json) "elts" | throwError
+                s!"Dictionary annotation tuple is missing an 'elts' field: {sliceJson}"
+              match elts[0]?, elts[1]? with
+              | some keyJson, some valJson =>
+                  match ← functionArgTypeSyntax? keyJson, ← functionArgTypeSyntax? valJson with
+                  | some keyTy, some valTy => return some (← `(Std.HashMap $keyTy $valTy))
+                  | _, _ => return none
+              | _, _ => return none
+          | _ => return none
+      | _, _ => return none
+  | _ => return none
+
+/-- Read Python function parameters as Lean idents plus any simple type annotations we can preserve. -/
+def functionArgInfos (json : Json) : PygenM (Array (TSyntax `ident × Option (TSyntax `term))) := do
   let .ok args := json.getObjVal? "args" | throwError
     s!"FuncDef node does not have an 'args' field or it is not a JSON value: {json}"
   let .ok argsArray := args.getObjValAs? (Array Json) "args" | throwError
     s!"FuncDef args does not have an 'args' field or it is not a JSON value: {args}"
-  let mut argIdents := #[]
+  let mut argInfos := #[]
   for arg in argsArray do
     let .ok argName := arg.getObjValAs? String "arg" | throwError
       s!"FuncDef argument does not have an 'arg' field or it is not a string: {arg}"
-    argIdents := argIdents.push (mkIdent argName.toName)
-  return argIdents
+    let annotation? := jsonFieldOption arg "annotation"
+    let ty? ← match annotation? with
+      | some annotationJson => functionArgTypeSyntax? annotationJson
+      | none => pure none
+    argInfos := argInfos.push (mkIdent argName.toName, ty?)
+  return argInfos
 
 def functionBodyElems (json : Json) : PygenM (Array Json) := do
   let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
@@ -60,33 +105,40 @@ def functionBodyElems (json : Json) : PygenM (Array Json) := do
 /-- Build the Lean value for a Python function body, using a pure term when possible and
 falling back to `do` notation for effectful bodies. This helper is reused for top-level
 definitions, nested local functions, and `Head_FunctionDef` threading. -/
-def functionValueSyntax (argIdents : Array (TSyntax `ident)) (bodyElems : Array Json) :
+def functionValueSyntax (argInfos : Array (TSyntax `ident × Option (TSyntax `term))) (bodyElems : Array Json) :
     PygenM (TSyntax `term) := do
   let usesExceptions := bodyNeedsExceptionMonad bodyElems
+  let mkLambda (body : TSyntax `term) : PygenM (TSyntax `term) := do
+    let mut result := body
+    for (argIdent, ty?) in argInfos.toList.reverse do
+      result ← match ty? with
+        | some ty => `(fun ($argIdent : $ty) ↦ $result)
+        | none => `(fun $argIdent ↦ $result)
+    pure result
   try
     let bodyStx ← pureFunctionBodySyntax bodyElems
-    if argIdents.isEmpty then
+    if argInfos.isEmpty then
       pure bodyStx
     else
-      `(fun $argIdents* ↦ $bodyStx)
+      mkLambda bodyStx
   catch e =>
     IO.eprintln s!"Could not generate pure function term: {← e.toMessageData.toString}"
     let bodyStxArray ← monadicFunctionBodySyntax bodyElems
     if usesExceptions then
-      if argIdents.isEmpty then
+      if argInfos.isEmpty then
         `(do
             $[$bodyStxArray:doElem]*)
       else
-        `(fun $argIdents* ↦ do
-            $[$bodyStxArray:doElem]*)
+        mkLambda (← `(do
+            $[$bodyStxArray:doElem]*))
     else
       let idRunIdent := mkIdent ``Id.run
-      if argIdents.isEmpty then
+      if argInfos.isEmpty then
         `($idRunIdent do
             $[$bodyStxArray:doElem]*)
       else
-        `(fun $argIdents* ↦ $idRunIdent do
-            $[$bodyStxArray:doElem]*)
+        mkLambda (← `($idRunIdent do
+            $[$bodyStxArray:doElem]*))
 
 @[pygen "FunctionDef"]
 def funcDefSyntax : (kind : SyntaxNodeKind) → Json →
@@ -95,21 +147,21 @@ def funcDefSyntax : (kind : SyntaxNodeKind) → Json →
         let .ok name := json.getObjValAs? String "name" | throwError
           s!"FuncDef node does not have a 'name' field or it is not a string: {json}"
         let nameIdent := mkIdent name.toName
-        let argIdents ← functionArgIdents json
+        let argInfos ← functionArgInfos json
         let bodyElems ← functionBodyElems json
-        let valueStx ← functionValueSyntax argIdents bodyElems
+        let valueStx ← functionValueSyntax argInfos bodyElems
         `(def $nameIdent := $valueStx)
     | `term, json => do
-        let argIdents ← functionArgIdents json
+        let argInfos ← functionArgInfos json
         let bodyElems ← functionBodyElems json
-        functionValueSyntax argIdents bodyElems
+        functionValueSyntax argInfos bodyElems
     | `doElem, json => do
         let .ok name := json.getObjValAs? String "name" | throwError
           s!"FuncDef node does not have a 'name' field or it is not a string: {json}"
         let nameIdent := mkIdent name.toName
-        let argIdents ← functionArgIdents json
+        let argInfos ← functionArgInfos json
         let bodyElems ← functionBodyElems json
-        let valueStx ← functionValueSyntax argIdents bodyElems
+        let valueStx ← functionValueSyntax argInfos bodyElems
         `(doElem| let $nameIdent := $valueStx)
     | kind, _ => throwError s!"Unsupported syntax category `{kind}` for FuncDef node"
 
@@ -169,11 +221,11 @@ def functionDefHeadSyntax : (kind : SyntaxNodeKind) → Json →
         let .ok name := json.getObjValAs? String "name" | throwError
           s!"FuncDef node does not have a 'name' field or it is not a string: {json}"
         let nameIdent := mkIdent name.toName
-        let argIdents ← functionArgIdents json
+        let argInfos ← functionArgInfos json
         let bodyElems ← functionBodyElems json
         let .ok rest := json.getObjValAs? (List Json) "rest" | throwError
           s!"FuncDef node does not have a 'rest' field or it is not a JSON value: {json}"
-        let valueStx ← functionValueSyntax argIdents bodyElems
+        let valueStx ← functionValueSyntax argInfos bodyElems
         let splitRest ← splitList rest
         let tailCode ← withoutCheck do
           getCode splitRest `term
