@@ -1,19 +1,31 @@
 # PYASTLEANCHECK START
 # TARGET: command
 # CHECK: def basic_switch := fun num ↦
-# CHECK: if num == (1 : Int) then "one"
-# CHECK: else "other"
+# CHECK: match num with
+# CHECK: | (1 : Int) => "one"
+# CHECK: | (2 : Int) => "two"
+# CHECK: | _ => "other"
 # CHECK: def switch_with_guard := fun num ↦
 # CHECK: let x := num
 # CHECK: if x < (0 : Int) then "negative"
 # CHECK: def switch_with_pattern := fun num ↦
-# CHECK: num == (1 : Int) || num == (2 : Int) || num == (3 : Int)
-# CHECK: else "other number"
+# CHECK: match num with
+# CHECK: | (0 : Int) => "zero"
+# CHECK: | (1 : Int) => "small number"
+# CHECK: | (2 : Int) => "small number"
+# CHECK: | (3 : Int) => "small number"
+# CHECK: | _ => "other number"
 # CHECK: def switch_with_tuple := fun point ↦
-# CHECK: let x := Prod.fst✝ point
-# CHECK: let y := Prod.snd✝ point
+# CHECK: match point with
+# CHECK: | ((0 : Int), (0 : Int)) => "origin"
+# CHECK: | (x, (0 : Int)) => String.append
+# CHECK: | ((0 : Int), y) => String.append
+# CHECK: | (x, y) =>
 # CHECK: def switch_with_default := fun num ↦
-# CHECK: if num == (1 : Int) then if num == (1 : Int) then "one" else "not one"
+# CHECK: match num with
+# CHECK: | (1 : Int) => if num == (1 : Int) then "one" else "not one"
+# CHECK: | (2 : Int) => "two"
+# CHECK: | _ => "other"
 # PYASTLEANCHECK END
 
 def basic_switch(num):
@@ -33,6 +45,8 @@ def switch_with_guard(num):
             return "zero"
         case x if x > 0:
             return "positive"
+        case _:
+            return "other"
         
 def switch_with_pattern(num):
     match num:

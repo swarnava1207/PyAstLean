@@ -1,14 +1,14 @@
 # PYASTLEANCHECK START
 # TARGET: command
 # CHECK: def GLOBAL_VAR := (42 : Int)
-# CHECK: def get_global := fun ↦
+# CHECK: def get_global :=
 # CHECK: GLOBAL_VAR
 # CHECK: def pass_func :=
 # CHECK: Id.run do
 # CHECK: if Bool.true then 
 # CHECK: let _ := ()
 # CHECK: else
-# CHECK: pure. ()
+# CHECK: let _ := ()
 # CHECK: let mut x := (1 : Int)
 # CHECK: x := x +ₚ (1 : Int)
 # CHECK: let _ := ()
@@ -18,7 +18,7 @@
 # CHECK: ["apple", "banana", "cherry"]
 # CHECK: def scores :=
 # CHECK: Std.HashMap.ofList
-# CHECK: def greet := fun name ↦
+# CHECK: def greet := fun (name : Int) ↦
 # CHECK: ToString.toString name
 # CHECK: def calculate_sum :=
 # CHECK: for i in PyAstLean.pyRange
@@ -29,7 +29,7 @@
 # CHECK: if answer < (42 : Int) then
 # CHECK: def main := Id.run do
 # CHECK: for _ in PyAstLean.pyRange (10 : Int)
-# CHECK: print (greet (1 : Int))
+# CHECK: let _ := pyPrint (greet (1 : Int))
 # CHECK: let _ := calculate_sum
 # CHECK: let _ := get_global
 # PYASTLEANCHECK END
@@ -51,7 +51,7 @@ answer = 42
 fruits = ["apple", "banana", "cherry"]
 scores = {"math": 95, "science": 90}
 
-def greet(name):
+def greet(name: int):
   return f"Hello, {name}!"
 
 def calculate_sum():

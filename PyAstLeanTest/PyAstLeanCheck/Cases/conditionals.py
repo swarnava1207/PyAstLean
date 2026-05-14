@@ -1,6 +1,7 @@
 # PYASTLEANCHECK START
 # TARGET: command
-# CHECK: def check_nesting := fun n m ↦
+# CHECK: def check_nesting := fun n ↦
+# CHECK: fun m ↦
 # CHECK: if n > (0 : Int) then
 # CHECK: if m >= (0 : Int) then
 # CHECK: "Both positive"
@@ -11,7 +12,10 @@
 # CHECK: "n non-positive, m positive"
 # CHECK: else
 # CHECK: "Both non-positive"
-# CHECK: def super_nested_if := fun a b c d ↦
+# CHECK: def super_nested_if := fun (a : Bool) ↦
+# CHECK: fun (b : Bool) ↦
+# CHECK: fun (c : Bool) ↦
+# CHECK: fun (d : Bool) ↦
 # CHECK: if a then
 # CHECK: if b then
 # CHECK: if c then
@@ -50,7 +54,7 @@ def check_nesting(n, m):
         else:
             return "Both non-positive"
 
-def super_nested_if(a, b, c, d):
+def super_nested_if(a: bool, b: bool, c: bool, d: bool):
     if a:
         if b:
             if c:

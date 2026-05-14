@@ -11,7 +11,7 @@
 # CHECK: let mut m := (5 : Int)
 # CHECK: let mut n := "world"
 # CHECK: let mut p := Bool.false
-# CHECK: def annotated_vars := fun ↦
+# CHECK: def annotated_vars :=
 # CHECK: let [[MUT7:(mut )?]]x := (10 : Int)
 # CHECK: let [[MUT8:(mut )?]]y := (20 : Int)
 # CHECK: x +ₚ y
