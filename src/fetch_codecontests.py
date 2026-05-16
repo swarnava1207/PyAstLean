@@ -2,16 +2,9 @@ from datasets import load_dataset
 import json
 import os
 
-# 1=C++, 2=PYTHON, 3=JAVA, 4=PYTHON3 according to some docs
-# Let's check the language enum
-# In CodeContests, it's:
-# 0: UNKNOWN
-# 1: CPP
-# 2: JAVA
-# 3: PYTHON2
-# 4: PYTHON3
+N = 10
 
-def save_codecontests_subset(n=5):
+def save_codecontests_subset(n=N):
     print(f"Loading CodeContests (test split)...")
     ds = load_dataset('deepmind/code_contests', split='test', streaming=True)
     
@@ -23,7 +16,7 @@ def save_codecontests_subset(n=5):
         # Filter for Python 3 solutions
         python_solutions = []
         for i, lang in enumerate(item['solutions']['language']):
-            if lang == 4: # Python 3
+            if lang == 3: # Python 3
                 python_solutions.append(item['solutions']['solution'][i])
         
         if not python_solutions:
