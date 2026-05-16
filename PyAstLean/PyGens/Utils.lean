@@ -86,6 +86,8 @@ def pureFunctionBodySyntax (bodyElems : Array Json) : PygenM (TSyntax `term) := 
   withoutCheck do
     getCode spl `term
 
+mutual
+
 /--
 Check whether a statement list definitely returns on every path without needing any outer
 continuation. This is used to decide whether nested control-flow can stay in the pure
@@ -94,16 +96,38 @@ threaded lowering, or whether we should fall back to the monadic statement path 
 partial def statementListDefinitelyReturns : List Json → Bool
 | [] => false
 | stmt :: rest =>
-    match jsonNodeType? stmt with
-    | some "Return" => true
-    | some "If" =>
-        match stmt.getObjValAs? (Array Json) "body", stmt.getObjValAs? (Array Json) "orelse" with
-        | .ok bodyElems, .ok orelseElems =>
-            !orelseElems.isEmpty &&
-              statementListDefinitelyReturns bodyElems.toList &&
-              statementListDefinitelyReturns orelseElems.toList
-        | _, _ => false
-    | _ => statementListDefinitelyReturns rest
+    if statementDefinitelyReturns stmt then
+      true
+    else
+      statementListDefinitelyReturns rest
+
+/-- Check whether one statement definitely returns on every path. -/
+partial def statementDefinitelyReturns (stmt : Json) : Bool :=
+  match jsonNodeType? stmt with
+  | some "Return" => true
+  | some "If" =>
+      match stmt.getObjValAs? (Array Json) "body", stmt.getObjValAs? (Array Json) "orelse" with
+      | .ok bodyElems, .ok orelseElems =>
+          !orelseElems.isEmpty &&
+            statementListDefinitelyReturns bodyElems.toList &&
+            statementListDefinitelyReturns orelseElems.toList
+      | _, _ => false
+  | some "Try" =>
+      match stmt.getObjValAs? (Array Json) "body",
+          stmt.getObjValAs? (Array Json) "handlers",
+          stmt.getObjValAs? (Array Json) "orelse" with
+      | .ok bodyElems, .ok handlerElems, .ok orelseElems =>
+          let bodyReturns := statementListDefinitelyReturns (bodyElems.toList ++ orelseElems.toList)
+          let handlersReturn :=
+            handlerElems.toList.all fun handlerJson =>
+              match handlerJson.getObjValAs? (Array Json) "body" with
+              | .ok handlerBody => statementListDefinitelyReturns handlerBody.toList
+              | .error _ => false
+          bodyReturns && handlersReturn
+      | _, _, _ => false
+  | _ => false
+
+end
 
 /-- Compile a function body statement-by-statement into `doElem`s for the monadic fallback path. -/
 def monadicFunctionBodySyntax (bodyElems : Array Json) : PygenM (Array (TSyntax `doElem)) := do
@@ -112,6 +136,8 @@ def monadicFunctionBodySyntax (bodyElems : Array Json) : PygenM (Array (TSyntax 
     let elemStx ← withoutCheck do
       getCode elem `doElem
     bodyStxArray := bodyStxArray.push elemStx
+    if statementDefinitelyReturns elem then
+      break
   return bodyStxArray
 
 /-- Build a Lean conjunction term. -/

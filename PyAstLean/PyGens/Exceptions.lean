@@ -7,8 +7,7 @@ namespace PyAstLean
 /-- Project the `.kind` field from a caught `PyException`. -/
 def exceptionKindTerm (caughtIdent : TSyntax `ident) : PygenM (TSyntax `term) := do
   let caughtTerm : TSyntax `term := mkIdent caughtIdent.getId
-  let kindProj := mkIdent ``PyAstLean.PyException.kind
-  `($kindProj $caughtTerm)
+  `(($(caughtTerm):term).OfKind)
 
 /-- Raise a structured `PyException` value in generated `Except` code. -/
 def throwExceptionDoElemSyntax (value : TSyntax `term) : PygenM (TSyntax `doElem) := do
@@ -32,7 +31,7 @@ def exceptionNameFromTermJson (json : Json) : PygenM String := do
 
 /-- Lower a Python `raise` payload into a `PyException` runtime value. -/
 def exceptionValueTerm (excJson? : Option Json) : PygenM (TSyntax `term) := do
-  let mkExcIdent := mkIdent ``PyAstLean.PyException.mk
+  let mkExcIdent := mkIdent ``PyAstLean.PyException.Raise
   match excJson? with
   | none => `($mkExcIdent "Exception" "Python raise")
   | some excJson =>
@@ -93,6 +92,8 @@ def handlerConditionTerm (caughtIdent : TSyntax `ident) (handlerType? : Option J
           else
             `($caughtKind == $(Syntax.mkStrLit excName))
 
+mutual
+
 /-- Compile the `except` chain into nested handler tests over the caught exception value. -/
 partial def exceptHandlersDoElemSyntax (caughtIdent : TSyntax `ident) (handlers : List Json) :
     PygenM (TSyntax `doElem) := do
@@ -107,7 +108,8 @@ partial def exceptHandlersDoElemSyntax (caughtIdent : TSyntax `ident) (handlers 
       let mut bodyElems := #[]
       if let some handlerName := handlerName? then
         bodyElems := bodyElems.push (← `(doElem| let $(mkIdent handlerName.toName) := $caughtIdent))
-      bodyElems := bodyElems ++ (← monadicFunctionBodySyntax bodyElemsJson)
+      bodyElems := bodyElems ++ (← tryBranchBodySyntax bodyElemsJson)
+      let bodyBlock ← sequenceDoElems bodyElems (← noopDoElemSyntax)
       let nextHandler ← exceptHandlersDoElemSyntax caughtIdent restHandlers
       if bodyElems.isEmpty then
         let noop ← noopDoElemSyntax
@@ -117,9 +119,64 @@ partial def exceptHandlersDoElemSyntax (caughtIdent : TSyntax `ident) (handlers 
             $nextHandler:doElem)
       else
         `(doElem| if $cond then
-            $[$bodyElems:doElem]*
+            $bodyBlock:doElem
           else
             $nextHandler:doElem)
+
+/-- Compile a try-body / catch-body sequence, lowering nested `Try` nodes to inner
+`PyExcept` terms so only genuinely nested tries introduce nested exception wrappers. -/
+partial def tryBranchBodySyntax (bodyElems : Array Json) : PygenM (Array (TSyntax `doElem)) := do
+  let mut bodyStxArray := #[]
+  for elem in bodyElems do
+    let elemStx ←
+      if jsonNodeType? elem == some "Try" then
+        let nestedTry ← tryExceptTerm elem
+        if statementDefinitelyReturns elem then
+          `(doElem| $nestedTry:term)
+        else
+          `(doElem| let _ ← $nestedTry:term)
+      else
+        withoutCheck do
+          getCode elem `doElem
+    bodyStxArray := bodyStxArray.push elemStx
+    if statementDefinitelyReturns elem then
+      break
+  return bodyStxArray
+
+/-- Lower a Python `try` block to an inner `PyExcept` term so it can be reused in both
+statement position and nested-expression-like contexts. -/
+partial def tryExceptTerm (json : Json) : PygenM (TSyntax `term) := do
+  let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
+    s!"Try node does not have a 'body' field or it is not a JSON array: {json}"
+  let .ok handlersElems := json.getObjValAs? (Array Json) "handlers" | throwError
+    s!"Try node does not have a 'handlers' field or it is not a JSON array: {json}"
+  let .ok orelseElems := json.getObjValAs? (Array Json) "orelse" | throwError
+    s!"Try node does not have an 'orelse' field or it is not a JSON array: {json}"
+  let .ok finalbodyElems := json.getObjValAs? (Array Json) "finalbody" | throwError
+    s!"Try node does not have a 'finalbody' field or it is not a JSON array: {json}"
+  let bodyAndElse ← tryBranchBodySyntax (bodyElems ++ orelseElems)
+  let bodyBlock ← sequenceDoElems bodyAndElse (← noopDoElemSyntax)
+  let catchIdent := mkIdent `caught
+  let catchBody ← exceptHandlersDoElemSyntax catchIdent handlersElems.toList
+  let exceptIdent := mkIdent ``PyAstLean.PyExcept
+  if finalbodyElems.isEmpty then
+    `(((do
+          try
+            $bodyBlock:doElem
+          catch $catchIdent =>
+            $catchBody:doElem) : $exceptIdent _))
+  else
+    let finalElems ← tryBranchBodySyntax finalbodyElems
+    let finalBlock ← sequenceDoElems finalElems (← noopDoElemSyntax)
+    `(((do
+          try
+            $bodyBlock:doElem
+          catch $catchIdent =>
+            $catchBody:doElem
+          finally
+            $finalBlock:doElem) : $exceptIdent _))
+
+end
 
 @[pygen "Raise"]
 def raiseSyntax : (kind : SyntaxNodeKind) → Json →
@@ -133,6 +190,8 @@ def raiseSyntax : (kind : SyntaxNodeKind) → Json →
 @[pygen "Try"]
 def trySyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
+    | `term, json => do
+        tryExceptTerm json
     | `doElem, json => do
         let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
           s!"Try node does not have a 'body' field or it is not a JSON array: {json}"
@@ -142,38 +201,24 @@ def trySyntax : (kind : SyntaxNodeKind) → Json →
           s!"Try node does not have an 'orelse' field or it is not a JSON array: {json}"
         let .ok finalbodyElems := json.getObjValAs? (Array Json) "finalbody" | throwError
           s!"Try node does not have a 'finalbody' field or it is not a JSON array: {json}"
-        let bodyAndElse ← monadicFunctionBodySyntax (bodyElems ++ orelseElems)
+        let bodyAndElse ← tryBranchBodySyntax (bodyElems ++ orelseElems)
+        let bodyBlock ← sequenceDoElems bodyAndElse (← noopDoElemSyntax)
         let catchIdent := mkIdent `caught
         let catchBody ← exceptHandlersDoElemSyntax catchIdent handlersElems.toList
         if finalbodyElems.isEmpty then
-          if bodyAndElse.isEmpty then
-            let noop ← noopDoElemSyntax
-            `(doElem| try
-                $noop:doElem
-              catch $catchIdent =>
-                $catchBody:doElem)
-          else
-            `(doElem| try
-                $[$bodyAndElse:doElem]*
-              catch $catchIdent =>
-                $catchBody:doElem)
+          `(doElem| try
+              $bodyBlock:doElem
+            catch $catchIdent =>
+              $catchBody:doElem)
         else
-          let finalElems ← monadicFunctionBodySyntax finalbodyElems
-          if bodyAndElse.isEmpty then
-            let noop ← noopDoElemSyntax
-            `(doElem| try
-                $noop:doElem
-              catch $catchIdent =>
-                $catchBody:doElem
-              finally
-                $[$finalElems:doElem]*)
-          else
-            `(doElem| try
-                $[$bodyAndElse:doElem]*
-              catch $catchIdent =>
-                $catchBody:doElem
-              finally
-                $[$finalElems:doElem]*)
+          let finalElems ← tryBranchBodySyntax finalbodyElems
+          let finalBlock ← sequenceDoElems finalElems (← noopDoElemSyntax)
+          `(doElem| try
+              $bodyBlock:doElem
+            catch $catchIdent =>
+              $catchBody:doElem
+            finally
+              $finalBlock:doElem)
     | `command, _ => do
         return ⟨mkNullNode #[]⟩
     | _, _ => throwError s!"Unsupported syntax category for Try node"
