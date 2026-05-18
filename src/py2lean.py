@@ -62,7 +62,11 @@ def _body_has_direct_io_syntax(body):
             if _node_type(node) != "Call":
                 continue
             func = node.get("func")
-            if isinstance(func, dict) and func.get("node_type") == "Name" and func.get("id") == "print":
+            if (
+                isinstance(func, dict)
+                and func.get("node_type") == "Name"
+                and func.get("id") in {"print", "input"}
+            ):
                 return True
     return False
 
@@ -113,20 +117,24 @@ def _annotate_calls_with_mode(node, effectful_names, effect_mode):
             _annotate_calls_with_mode(item, effectful_names, effect_mode)
 
 
-def _annotate_direct_print_calls(node):
+def _annotate_direct_io_calls(node):
     if isinstance(node, dict):
         if node.get("node_type") == "Call":
             func = node.get("func")
-            if isinstance(func, dict) and func.get("node_type") == "Name" and func.get("id") == "print":
+            if (
+                isinstance(func, dict)
+                and func.get("node_type") == "Name"
+                and func.get("id") in {"print", "input"}
+            ):
                 node.setdefault("effect_mode", "io")
         node_type = node.get("node_type")
         for key, value in node.items():
             if node_type == "FunctionDef" and key == "body":
                 continue
-            _annotate_direct_print_calls(value)
+            _annotate_direct_io_calls(value)
     elif isinstance(node, list):
         for item in node:
-            _annotate_direct_print_calls(item)
+            _annotate_direct_io_calls(item)
 
 
 def annotate_exception_effects(module_json):
@@ -168,7 +176,7 @@ def annotate_exception_effects(module_json):
 
 
 def annotate_io_effects(module_json):
-    """Mark print-bearing function defs and direct calls that require translated `IO` handling."""
+    """Mark input/print-bearing function defs and direct calls that require translated `IO` handling."""
     def annotate_scope(body):
         local_functions = {
             stmt["name"]: stmt
@@ -202,10 +210,10 @@ def annotate_io_effects(module_json):
                 continue
             if io_effectful.get(name, False):
                 fn["effect_mode"] = "io"
-            _annotate_direct_print_calls(fn.get("body", []))
+            _annotate_direct_io_calls(fn.get("body", []))
             _annotate_calls_with_mode(fn.get("body", []), io_effectful_names, "io")
 
-        _annotate_direct_print_calls(body)
+        _annotate_direct_io_calls(body)
         _annotate_calls_with_mode(body, io_effectful_names, "io")
 
     if isinstance(module_json, dict) and module_json.get("node_type") == "Module":
