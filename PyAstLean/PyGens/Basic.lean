@@ -112,33 +112,6 @@ def dictSyntax : (kind : SyntaxNodeKind) → Json →
     `($ofListIdent [$entryCodes,*])
   | _, _ => throwError s!"Unsupported syntax category for Dict node"
 
-@[pygen "FormattedValue"]
-def formattedValueSyntax : (kind : SyntaxNodeKind) → Json →
-    PygenM (TSyntax kind)
-  | `term, json => do
-    let .ok valueJson := json.getObjValAs? Json "value" | throwError
-      s!"FormattedValue node does not have a 'value' field or it is not a JSON value: {json}"
-    let valueCode ← getCode valueJson `term
-    let toStringIdent := mkIdent ``toString
-    `($toStringIdent $valueCode)
-  | _, _ => throwError s!"Unsupported syntax category for FormattedValue node"
-
-@[pygen "JoinedStr"]
-def joinedStrSyntax : (kind : SyntaxNodeKind) → Json →
-    PygenM (TSyntax kind)
-  | `term, json => do
-    let .ok valuesJson := json.getObjValAs? Json "values" | throwError
-      s!"JoinedStr node does not have a 'values' field or it is not a JSON value: {json}"
-    let valuesCodes ← match valuesJson with
-      | .arr arr => arr.mapM (fun valueJson => getCode valueJson `term)
-      | _ => throwError s!"JoinedStr node 'values' field is not an array: {valuesJson}"
-    let mut res : TSyntax `term ← `("")
-    let appendIdent := mkIdent ``String.append
-    for valueCode in valuesCodes do
-      res ← `($appendIdent $res $valueCode)
-    return res
-  | _, _ => throwError s!"Unsupported syntax category for JoinedStr node"
-
 @[pygen "Subscript"]
 def subscriptSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
