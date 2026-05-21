@@ -22,6 +22,9 @@ subDir = "regex"
 name = "PyAstLean"
 
 [[lean_lib]]
+name = "Libraries"
+
+[[lean_lib]]
 name = "PyAstLeanTest"
 
 [[lean_exe]]

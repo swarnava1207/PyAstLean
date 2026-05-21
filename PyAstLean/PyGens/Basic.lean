@@ -1,4 +1,5 @@
 import Mathlib
+import Libraries.Registry
 import PyAstLean.Codegen
 import PyAstLean.PyAPI
 import PyAstLean.PyGens.Attributes
@@ -51,17 +52,31 @@ def constantSyntax : (kind : SyntaxNodeKind) → Json →
     | _ => throwError s!"Unsupported constant value: {value}"
   | _, _ => throwError s!"Unsupported syntax category for Constant node"
 
+def jsonLibraryMappedName? (json : Json) : PygenM (Option Lean.Name) := do
+  match json.getObjValAs? String "library_module", json.getObjValAs? String "library_member" with
+  | .ok moduleName, .ok memberName =>
+      match Libraries.pythonLibraryMap? moduleName memberName with
+      | some leanName => pure (some leanName)
+      | none => throwError s!"Unsupported imported library member '{moduleName}.{memberName}'."
+  | _, _ => pure none
+
 @[pygen "Name"]
 def nameSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
   | `term, json => do
-    let .ok id := json.getObjValAs? String "id" | throwError
-      s!"Name node does not have an 'id' field or it is not a string: {json}"
-    return mkIdent id.toName
+    match ← jsonLibraryMappedName? json with
+    | some leanName => pure (mkIdent leanName)
+    | none =>
+        let .ok id := json.getObjValAs? String "id" | throwError
+          s!"Name node does not have an 'id' field or it is not a string: {json}"
+        return mkIdent id.toName
   | `ident, json => do
-    let .ok id := json.getObjValAs? String "id" | throwError
-      s!"Name node does not have an 'id' field or it is not a string: {json}"
-    return mkIdent id.toName
+    match ← jsonLibraryMappedName? json with
+    | some leanName => pure (mkIdent leanName)
+    | none =>
+        let .ok id := json.getObjValAs? String "id" | throwError
+          s!"Name node does not have an 'id' field or it is not a string: {json}"
+        return mkIdent id.toName
   | _, _ => throwError s!"Unsupported syntax category for Name node"
 
 @[pygen "List"]

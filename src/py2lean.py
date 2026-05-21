@@ -18,6 +18,7 @@ HOMEDIR = Path.absolute(Path(__name__).parent.parent)
 SRC_DIR = HOMEDIR / "src"
 PY_EXEC = HOMEDIR / ".venv" / "bin" / "python"
 logger = logging.getLogger(__name__)
+SUPPORTED_LIBRARY_IMPORTS = {"math"}
 
 COMMENT_PLACEHOLDER_RE = re.compile(
     r"^(?P<indent>\s*)(?:let|def)\s+__pyastlean_comment_(?P<id>\d+)\b.*$"
@@ -264,6 +265,153 @@ def annotate_io_effects(module_json):
     if isinstance(module_json, dict) and module_json.get("node_type") == "Module":
         annotate_scope(module_json.get("body", []))
 
+
+def _imported_alias_name(alias_node):
+    asname = alias_node.get("asname")
+    if isinstance(asname, str) and asname:
+        return asname
+    name = alias_node.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    return name.split(".")[0]
+
+
+def _stmt_bound_names(node):
+    bound = set()
+    if not isinstance(node, dict):
+        return bound
+    node_type = node.get("node_type")
+    if node_type == "Name":
+        ident = node.get("id")
+        if isinstance(ident, str):
+            bound.add(ident)
+    elif node_type in {"Tuple", "List"}:
+        for elt in node.get("elts", []):
+            bound.update(_stmt_bound_names(elt))
+    elif node_type == "arg":
+        ident = node.get("arg")
+        if isinstance(ident, str):
+            bound.add(ident)
+    elif node_type == "Assign":
+        for target in node.get("targets", []):
+            bound.update(_stmt_bound_names(target))
+    elif node_type == "AnnAssign":
+        bound.update(_stmt_bound_names(node.get("target")))
+    elif node_type == "AugAssign":
+        bound.update(_stmt_bound_names(node.get("target")))
+    elif node_type == "For":
+        bound.update(_stmt_bound_names(node.get("target")))
+    elif node_type == "FunctionDef":
+        name = node.get("name")
+        if isinstance(name, str):
+            bound.add(name)
+    return bound
+
+
+def _function_arg_names(fn_node):
+    args = fn_node.get("args", {})
+    names = set()
+    if not isinstance(args, dict):
+        return names
+    for key in ("posonlyargs", "args", "kwonlyargs"):
+        for arg in args.get(key, []):
+            names.update(_stmt_bound_names(arg))
+    names.update(_stmt_bound_names(args.get("vararg")))
+    names.update(_stmt_bound_names(args.get("kwarg")))
+    return names
+
+
+def _annotate_library_refs_in_expr(node, import_env):
+    if isinstance(node, list):
+        for item in node:
+            _annotate_library_refs_in_expr(item, import_env)
+        return
+    if not isinstance(node, dict):
+        return
+
+    node_type = node.get("node_type")
+    if node_type == "Name":
+        binding = import_env.get(node.get("id"))
+        if binding and binding.get("kind") == "member":
+            node["library_module"] = binding["module"]
+            node["library_member"] = binding["member"]
+    elif node_type == "Attribute":
+        value = node.get("value")
+        if isinstance(value, dict) and value.get("node_type") == "Name":
+            binding = import_env.get(value.get("id"))
+            if binding and binding.get("kind") == "module":
+                node["library_module"] = binding["module"]
+                node["library_member"] = node.get("attr")
+
+    for key, value in node.items():
+        if node_type == "FunctionDef" and key == "body":
+            continue
+        _annotate_library_refs_in_expr(value, import_env)
+
+
+def _annotate_library_imports_in_scope(body, inherited_env=None):
+    env = dict(inherited_env or {})
+    for stmt in body:
+        if not isinstance(stmt, dict):
+            continue
+        node_type = stmt.get("node_type")
+        if node_type == "Import":
+            for alias_node in stmt.get("names", []):
+                if not isinstance(alias_node, dict):
+                    continue
+                module_name = alias_node.get("name")
+                local_name = _imported_alias_name(alias_node)
+                if (
+                    isinstance(module_name, str)
+                    and isinstance(local_name, str)
+                    and module_name in SUPPORTED_LIBRARY_IMPORTS
+                ):
+                    env[local_name] = {"kind": "module", "module": module_name}
+            continue
+        if node_type == "ImportFrom":
+            module_name = stmt.get("module")
+            if isinstance(module_name, str) and module_name in SUPPORTED_LIBRARY_IMPORTS:
+                for alias_node in stmt.get("names", []):
+                    if not isinstance(alias_node, dict):
+                        continue
+                    member_name = alias_node.get("name")
+                    local_name = _imported_alias_name(alias_node)
+                    if isinstance(member_name, str) and isinstance(local_name, str):
+                        env[local_name] = {
+                            "kind": "member",
+                            "module": module_name,
+                            "member": member_name,
+                        }
+            continue
+
+        _annotate_library_refs_in_expr(stmt, env)
+
+        if node_type == "FunctionDef":
+            child_env = dict(env)
+            for arg_name in _function_arg_names(stmt):
+                child_env.pop(arg_name, None)
+            _annotate_library_imports_in_scope(stmt.get("body", []), child_env)
+        else:
+            for body_key in ("body", "orelse", "finalbody"):
+                nested = stmt.get(body_key)
+                if isinstance(nested, list):
+                    _annotate_library_imports_in_scope(nested, dict(env))
+            for handler in stmt.get("handlers", []):
+                if isinstance(handler, dict):
+                    _annotate_library_imports_in_scope(handler.get("body", []), dict(env))
+            for case in stmt.get("cases", []):
+                if isinstance(case, dict):
+                    _annotate_library_imports_in_scope(case.get("body", []), dict(env))
+
+        for bound_name in _stmt_bound_names(stmt):
+            env.pop(bound_name, None)
+
+
+def annotate_library_imports(module_json):
+    """Annotate names/attributes that come from imported libraries such as `math`."""
+    if isinstance(module_json, dict) and module_json.get("node_type") == "Module":
+        _annotate_library_imports_in_scope(module_json.get("body", []))
+
 def translate_to_json(source_code, filepath=None):
     """
     Parses Python source code and translates it to a JSON IR.
@@ -288,6 +436,7 @@ def translate_to_json(source_code, filepath=None):
     logger.debug("Parsed Python AST:\n%s", ast.dump(ast_tree, indent=4))
     translator = ASTToJsonLeanVisitor(source_code)
     data = translator.visit(ast_tree)
+    annotate_library_imports(data)
     annotate_exception_effects(data)
     annotate_io_effects(data)
     logger.debug("Generated JSON IR: %s", json.dumps(data))
@@ -313,6 +462,7 @@ class LeanBackendClient:
         explicit_files = [
             self.cwd / "py2lean.lean",
             self.cwd / "lakefile.lean",
+            self.cwd / "lakefile.toml",
             self.cwd / "lean-toolchain",
         ]
         for path in explicit_files:
@@ -322,6 +472,9 @@ class LeanBackendClient:
         pyastlean_dir = self.cwd / "PyAstLean"
         if pyastlean_dir.exists():
             yield from pyastlean_dir.rglob("*.lean")
+        libraries_dir = self.cwd / "Libraries"
+        if libraries_dir.exists():
+            yield from libraries_dir.rglob("*.lean")
 
     def _binary_needs_rebuild(self):
         """Return true when the backend binary is missing or older than tracked Lean sources."""
