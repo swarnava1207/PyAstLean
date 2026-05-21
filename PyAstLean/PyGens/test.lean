@@ -4,6 +4,8 @@ import PyAstLean.PyGens
 import PyAstLean.PyGens.Basic
 namespace PyAstLean
 
+def sqrt_demo := fun x ↦ Libraries.math.pyMathSqrt x
+
 def read_line : IO String := do
   let mut raw ← PyAstLean.pyInputIO ""
   return raw

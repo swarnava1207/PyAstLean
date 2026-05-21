@@ -1,4 +1,5 @@
 import Mathlib
+import Libraries.Registry
 import PyAstLean.Codegen
 import PyAstLean.PyAPI
 import PyAstLean.PyGens.Attributes
@@ -6,7 +7,10 @@ open Lean Meta Elab Term Qq Std
 
 namespace PyAstLean
 
-#map_names [print → pyPrint, len → pyLen, sorted → pySort, int → pyInt]
+#map_names [print → pyPrint, len → pyLen, sorted → pySort, int → pyInt,
+  str → pyStr, list → pyList,
+  map → pyMap, filter → pyFilter, zip → pyZip, enumerate → pyEnumerate,
+  sum → pySum, min → pyMin, max → pyMax]
 
 def intToStx (n : Int) : MetaM <| TSyntax `term := do
   if n < 0 then
@@ -48,17 +52,31 @@ def constantSyntax : (kind : SyntaxNodeKind) → Json →
     | _ => throwError s!"Unsupported constant value: {value}"
   | _, _ => throwError s!"Unsupported syntax category for Constant node"
 
+def jsonLibraryMappedName? (json : Json) : PygenM (Option Lean.Name) := do
+  match json.getObjValAs? String "library_module", json.getObjValAs? String "library_member" with
+  | .ok moduleName, .ok memberName =>
+      match Libraries.pythonLibraryMap? moduleName memberName with
+      | some leanName => pure (some leanName)
+      | none => throwError s!"Unsupported imported library member '{moduleName}.{memberName}'."
+  | _, _ => pure none
+
 @[pygen "Name"]
 def nameSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
   | `term, json => do
-    let .ok id := json.getObjValAs? String "id" | throwError
-      s!"Name node does not have an 'id' field or it is not a string: {json}"
-    return mkIdent id.toName
+    match ← jsonLibraryMappedName? json with
+    | some leanName => pure (mkIdent leanName)
+    | none =>
+        let .ok id := json.getObjValAs? String "id" | throwError
+          s!"Name node does not have an 'id' field or it is not a string: {json}"
+        return mkIdent id.toName
   | `ident, json => do
-    let .ok id := json.getObjValAs? String "id" | throwError
-      s!"Name node does not have an 'id' field or it is not a string: {json}"
-    return mkIdent id.toName
+    match ← jsonLibraryMappedName? json with
+    | some leanName => pure (mkIdent leanName)
+    | none =>
+        let .ok id := json.getObjValAs? String "id" | throwError
+          s!"Name node does not have an 'id' field or it is not a string: {json}"
+        return mkIdent id.toName
   | _, _ => throwError s!"Unsupported syntax category for Name node"
 
 @[pygen "List"]

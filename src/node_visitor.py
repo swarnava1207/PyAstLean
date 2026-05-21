@@ -1,6 +1,8 @@
 import json
 import sys
 import ast
+from io import StringIO
+import tokenize
 
 BINOP_MAP = {
     ast.Add: "add",
@@ -60,6 +62,7 @@ Use auto-serialize for nodes whose JSON form is basically:
 AUTO_SERIALIZED_NODE_NAMES = {
     "ExceptHandler",
     "match_case",
+    "alias",
 }
 
 FUNCTION_DEF_SCHEMA = {
@@ -83,6 +86,109 @@ FUNCTION_DEF_SCHEMA = {
 }
 
 class ASTToJsonLeanVisitorBase:
+    def __init__(self, source_code=""):
+        self.source_code = source_code
+        self.source_lines = source_code.splitlines()
+        self.comment_entries = self._extract_comment_entries(source_code)
+        self._next_comment_id = 0
+
+    def _new_comment_id(self):
+        comment_id = str(self._next_comment_id)
+        self._next_comment_id += 1
+        return comment_id
+
+    def _comment_block_lines(self, source_code):
+        """Ignore PALC directive blocks so harness comments do not leak into generated Lean."""
+        ignored = set()
+        in_block = False
+        for line_no, raw_line in enumerate(source_code.splitlines(), start=1):
+            stripped = raw_line.strip()
+            if stripped == "# PYASTLEANCHECK START":
+                in_block = True
+            if in_block:
+                ignored.add(line_no)
+            if stripped == "# PYASTLEANCHECK END":
+                in_block = False
+        return ignored
+
+    def _extract_comment_entries(self, source_code):
+        """Collect standalone source comments with line/indent information for later body interleaving."""
+        if not source_code:
+            return []
+        ignored_lines = self._comment_block_lines(source_code)
+        entries = []
+        for tok in tokenize.generate_tokens(StringIO(source_code).readline):
+            if tok.type != tokenize.COMMENT:
+                continue
+            line_no, col = tok.start
+            if line_no in ignored_lines:
+                continue
+            raw_line = self.source_lines[line_no - 1] if 0 <= line_no - 1 < len(self.source_lines) else ""
+            if not raw_line.lstrip().startswith("#"):
+                continue
+            text = tok.string[1:].lstrip()
+            entries.append({"line": line_no, "indent": col, "text": text})
+        return entries
+
+    def _body_comments_between(self, start_line, end_line, indent):
+        """Return standalone comments that belong to one lexical block gap."""
+        if start_line > end_line:
+            return []
+        result = []
+        for entry in self.comment_entries:
+            if start_line <= entry["line"] <= end_line and entry["indent"] == indent:
+                result.append({
+                    "node_type": "Comment",
+                    "comment_id": self._new_comment_id(),
+                    "text": entry["text"],
+                })
+        return result
+
+    def _is_docstring_stmt(self, stmt):
+        return (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        )
+
+    def _make_docstring_node(self, text):
+        return {
+            "node_type": "DocString",
+            "comment_id": self._new_comment_id(),
+            "text": text,
+        }
+
+    def visit_body_statements(self, statements, *, body_start_line=1, body_end_line=None, allow_docstring=False):
+        """Translate a statement list while interleaving standalone comments and leading docstrings."""
+        if body_end_line is None:
+            body_end_line = len(self.source_lines)
+        if not statements:
+            return []
+
+        body_indent = getattr(statements[0], "col_offset", 0)
+        result = []
+        cursor_line = body_start_line
+        start_idx = 0
+
+        if allow_docstring and self._is_docstring_stmt(statements[0]):
+            doc_stmt = statements[0]
+            result.extend(self._body_comments_between(cursor_line, doc_stmt.lineno - 1, body_indent))
+            result.append(self._make_docstring_node(doc_stmt.value.value))
+            cursor_line = getattr(doc_stmt, "end_lineno", doc_stmt.lineno) + 1
+            start_idx = 1
+
+        for stmt in statements[start_idx:]:
+            stmt_line = getattr(stmt, "lineno", cursor_line)
+            result.extend(self._body_comments_between(cursor_line, stmt_line - 1, body_indent))
+            if isinstance(stmt, ast.AnnAssign) and stmt.value is None:
+                cursor_line = getattr(stmt, "end_lineno", stmt_line) + 1
+                continue
+            result.append(self.visit(stmt))
+            cursor_line = getattr(stmt, "end_lineno", stmt_line) + 1
+
+        result.extend(self._body_comments_between(cursor_line, body_end_line, body_indent))
+        return result
+
     def _map_ast_type(self, node_or_type, mapping, label):
         """Map an AST node type through a shared lookup table."""
         node_type = type(node_or_type) if isinstance(node_or_type, ast.AST) else node_or_type
@@ -116,12 +222,7 @@ class ASTToJsonLeanVisitorBase:
 
     def visit_statements(self, statements):
         """Translate a statement list, skipping declaration-only annotations."""
-        result = []
-        for stmt in statements:
-            if isinstance(stmt, ast.AnnAssign) and stmt.value is None:
-                continue
-            result.append(self.visit(stmt))
-        return result
+        return self.visit_body_statements(statements)
 
     def visit(self, node):
         """
@@ -323,12 +424,38 @@ class ASTToJsonLeanVisitorBase:
         """Translates ast.Module to a JSON IR node."""
         return {
             "node_type": "Module",
-            "body": self.visit_statements(node.body)
+            "body": self.visit_body_statements(
+                node.body,
+                body_start_line=1,
+                body_end_line=len(self.source_lines),
+                allow_docstring=True,
+            )
+        }
+
+    def visit_Import(self, node):
+        """Translate `import ...` statements into a lightweight IR node."""
+        return {
+            "node_type": "Import",
+            "names": [self.visit(alias) for alias in node.names],
+        }
+
+    def visit_ImportFrom(self, node):
+        """Translate `from ... import ...` statements into a lightweight IR node."""
+        return {
+            "node_type": "ImportFrom",
+            "module": node.module,
+            "names": [self.visit(alias) for alias in node.names],
+            "level": node.level,
         }
 
     def visit_FunctionDef(self, node):
         """Translates ast.FunctionDef to a JSON IR node."""
-        body_json = self.visit_statements(node.body)
+        body_json = self.visit_body_statements(
+            node.body,
+            body_start_line=getattr(node, "lineno", 1) + 1,
+            body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            allow_docstring=True,
+        )
         return {
             "node_type": "FunctionDef",
             "name": node.name,
@@ -421,8 +548,16 @@ class ASTToJsonLeanVisitorBase:
             "node_type": "For",
             "target": self.visit(node.target),
             "iter": self.visit(node.iter),
-            "body": self.visit_statements(node.body),
-            "orelse": self.visit_statements(node.orelse)
+            "body": self.visit_body_statements(
+                node.body,
+                body_start_line=getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            ),
+            "orelse": self.visit_body_statements(
+                node.orelse,
+                body_start_line=(getattr(node.body[-1], "end_lineno", getattr(node, "lineno", 1)) + 1) if node.body else getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            )
         }
 
     def visit_If(self, node):
@@ -430,8 +565,16 @@ class ASTToJsonLeanVisitorBase:
         return {
             "node_type": "If",
             "test": self.visit(node.test),
-            "body": self.visit_statements(node.body),
-            "orelse": self.visit_statements(node.orelse)
+            "body": self.visit_body_statements(
+                node.body,
+                body_start_line=getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            ),
+            "orelse": self.visit_body_statements(
+                node.orelse,
+                body_start_line=(getattr(node.body[-1], "end_lineno", getattr(node, "lineno", 1)) + 1) if node.body else getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            )
         }
 
     def visit_IfExp(self, node):
@@ -448,7 +591,11 @@ class ASTToJsonLeanVisitorBase:
         return {
             "node_type": "With",
             "items": [self.visit(item) for item in node.items],
-            "body": self.visit_statements(node.body)
+            "body": self.visit_body_statements(
+                node.body,
+                body_start_line=getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            )
         }
         
     def visit_withitem(self, node):
@@ -464,8 +611,16 @@ class ASTToJsonLeanVisitorBase:
         return {
             "node_type": "While",
             "test": self.visit(node.test),
-            "body": self.visit_statements(node.body),
-            "orelse": self.visit_statements(node.orelse)
+            "body": self.visit_body_statements(
+                node.body,
+                body_start_line=getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            ),
+            "orelse": self.visit_body_statements(
+                node.orelse,
+                body_start_line=(getattr(node.body[-1], "end_lineno", getattr(node, "lineno", 1)) + 1) if node.body else getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            )
         }
 
     def visit_IfExp(self, node):
@@ -488,10 +643,50 @@ class ASTToJsonLeanVisitorBase:
         """Translates ast.Try (Exception handling) to a JSON IR node."""
         return {
             "node_type": "Try",
-            "body": self.visit_statements(node.body),
+            "body": self.visit_body_statements(
+                node.body,
+                body_start_line=getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            ),
             "handlers": [self.visit(handler) for handler in node.handlers],
-            "orelse": self.visit_statements(node.orelse),
-            "finalbody": self.visit_statements(node.finalbody)
+            "orelse": self.visit_body_statements(
+                node.orelse,
+                body_start_line=(getattr(node.body[-1], "end_lineno", getattr(node, "lineno", 1)) + 1) if node.body else getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            ),
+            "finalbody": self.visit_body_statements(
+                node.finalbody,
+                body_start_line=(getattr(node.orelse[-1], "end_lineno", getattr(node.body[-1], "end_lineno", getattr(node, "lineno", 1))) + 1) if (node.orelse or node.body) else getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            )
+        }
+
+    def visit_ExceptHandler(self, node):
+        """Translates ast.ExceptHandler with comment-aware body handling."""
+        return {
+            "node_type": "ExceptHandler",
+            "type": self.visit(node.type) if node.type is not None else None,
+            "name": node.name,
+            "body": self.visit_body_statements(
+                node.body,
+                body_start_line=getattr(node, "lineno", 1) + 1,
+                body_end_line=getattr(node, "end_lineno", len(self.source_lines)),
+            ),
+        }
+
+    def visit_match_case(self, node):
+        """Translates ast.match_case with comment-aware body handling."""
+        first_stmt_line = getattr(node.body[0], "lineno", 1) if node.body else 1
+        last_stmt_end = getattr(node.body[-1], "end_lineno", first_stmt_line) if node.body else first_stmt_line
+        return {
+            "node_type": "match_case",
+            "pattern": self.visit(node.pattern),
+            "guard": None if node.guard is None else self.visit(node.guard),
+            "body": self.visit_body_statements(
+                node.body,
+                body_start_line=first_stmt_line,
+                body_end_line=last_stmt_end,
+            ),
         }
 
     def visit_Raise(self, node):

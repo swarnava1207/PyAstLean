@@ -11,6 +11,7 @@ import ast
 code="""
 x = len([1, 2, 3])
 print(x)
+# comment
 x.extend([4, 5])
 """
 ast.parse(code)
