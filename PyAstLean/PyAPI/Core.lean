@@ -39,4 +39,37 @@ def pyRange (stop : Int) (start : Int := 0) (step : Int := 1) : List Int := do
   else
     []
 
+/-- Python-style indexing/slicing for lists. -/
+def pyListGetItem {α : Type} [BEq α] (xs : List α) (idx : Int) : Option α :=
+  let len := xs.length
+  let trueIdx := idx % len |>.toNat
+  let atIdx x := x.snd == trueIdx
+  xs.zipIdx
+  |>.find? (p := atIdx)
+  |>.map (·.fst)
+
+/-- Python-style slicing for lists. -/
+def pyListSlice {α : Type} (xs : List α) (start : Option Int) (stop : Option Int) : List α :=
+  let len := xs.length
+  let start : Nat := match start with
+    | some i => if i < 0 then (max 0 (len + i)).toNat else (min len i.toNat)
+    | none => 0
+  let stop : Nat := match stop with
+    | some i => if i < 0 then (max 0 (len + i)).toNat else (min len i.toNat)
+    | none => len
+  xs.take stop |> List.drop start
+
+/-- Python-style indexing/slicing for strings. -/
+def pyStringGetItem (s : String) (idx : Int) : Option Char :=
+  let lst := s.toList
+  match pyListGetItem lst idx with
+  | some c => some c
+  | none => none
+
+/-- Python-style slicing for strings. -/
+def pyStringSlice (s : String) (start : Option Int) (stop : Option Int) : String :=
+  let lst := s.toList
+  let sliced := pyListSlice lst start stop
+  String.ofList sliced
+
 end PyAstLean

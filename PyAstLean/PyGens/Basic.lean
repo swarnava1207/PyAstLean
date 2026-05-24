@@ -130,6 +130,7 @@ def dictSyntax : (kind : SyntaxNodeKind) → Json →
     `($ofListIdent [$entryCodes,*])
   | _, _ => throwError s!"Unsupported syntax category for Dict node"
 
+
 def js₀ := json% {
   "node_type": "Constant",
   "value": 1
@@ -340,28 +341,6 @@ def onePlusTwoNode := json% {
 --     let callCode := t
 --     `(doElem| let _ := $callCode)
 --   | _, _ => throwError s!"Unsupported syntax category for Call node"
-
-
-@[pygen "Subscript"]
-def subscriptSyntax : (kind : SyntaxNodeKind) → Json →
-    PygenM (TSyntax kind)
-  | `term, json => do
-    let .ok valueJson := json.getObjValAs? Json "value" | throwError
-      s!"Subscript node does not have a 'value' field or it is not a JSON value: {json}"
-    let .ok sliceJson := json.getObjValAs? Json "slice" | throwError
-      s!"Subscript node does not have a 'slice' field or it is not a JSON value: {json}"
-    let valueCode ← getCode valueJson `term
-    match sliceJson.getObjValAs? String "node_type", sliceJson.getObjValAs? Json "value" with
-    | .ok "Constant", .ok (.num (JsonNumber.mk 0 0)) =>
-        let fstIdent := mkIdent ``Prod.fst
-        `($fstIdent $valueCode)
-    | .ok "Constant", .ok (.num (JsonNumber.mk 1 0)) =>
-        let sndIdent := mkIdent ``Prod.snd
-        `($sndIdent $valueCode)
-    | _, _ =>
-        throwError "Only tuple subscript projections `[0]` and `[1]` are supported right now."
-  | _, _ => throwError s!"Unsupported syntax category for Subscript node"
-
 
 def fn := fun n => show IO _ from  do
   let m := n + 1
