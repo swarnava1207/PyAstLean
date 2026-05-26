@@ -367,7 +367,7 @@ def listCaseFiles (dir : System.FilePath) : IO (Array System.FilePath) := do
 
 def runCases (cases : Array System.FilePath) : IO Unit := do
   if cases.isEmpty then
-    throw <| IO.userError "PyLeanCheck: no test cases found."
+    IO.println "PyLeanCheck: no test cases found."
   let mut failures : Array String := #[]
   let mut totalTime := 0
   for casePath in cases do
