@@ -2,9 +2,26 @@ import Mathlib
 
 namespace Libraries.numpy
 
-/-- Internal helper for float-oriented matrix inputs. -/
-def ratToFloat (x : Rat) : Float :=
-  Rat.toFloat x
+/-- Types that can be treated as NumPy numeric entries by the runtime layer. -/
+class PyNumpyScalar (α : Type) where
+  toFloat : α → Float
+
+export PyNumpyScalar (toFloat)
+
+instance : PyNumpyScalar Float where
+  toFloat := id
+
+instance : PyNumpyScalar Rat where
+  toFloat := Rat.toFloat
+
+instance : PyNumpyScalar Int where
+  toFloat x := Rat.toFloat (x : Rat)
+
+instance : PyNumpyScalar Nat where
+  toFloat x := Rat.toFloat (x : Rat)
+
+instance : PyNumpyScalar Bool where
+  toFloat b := if b then 1.0 else 0.0
 
 /-- Convert a nonnegative `Int` dimension to `Nat`. -/
 def pyNumpyNatFromInt (n : Int) : Nat :=
@@ -44,11 +61,11 @@ def pyNumpySameShape? {α β} (lhs : List (List α)) (rhs : List (List β)) : Bo
   | _, _ => false
 
 /-- Normalize a matrix to `Float` entries. -/
-def pyNumpyArray (matrix : List (List Rat)) : List (List Float) :=
-  matrix.map (List.map ratToFloat)
+def pyNumpyArray {α} [PyNumpyScalar α] (matrix : List (List α)) : List (List Float) :=
+  matrix.map (List.map toFloat)
 
 /-- Return the matrix shape as `(rows, cols)`. -/
-def pyNumpyShape (matrix : List (List Rat)) : Int × Int :=
+def pyNumpyShape {α} (matrix : List (List α)) : Int × Int :=
   if pyNumpyIsRectangular matrix then
     (Int.ofNat matrix.length, Int.ofNat (pyNumpyCols matrix))
   else
@@ -73,7 +90,7 @@ def pyNumpyEye (n : Int) : List (List Float) :=
     (List.range n').map (fun j => if i = j then 1.0 else 0.0))
 
 /-- Transpose a rectangular matrix. -/
-def pyNumpyTranspose (matrix : List (List Rat)) : List (List Float) :=
+def pyNumpyTranspose {α} [PyNumpyScalar α] (matrix : List (List α)) : List (List Float) :=
   if pyNumpyIsRectangular matrix then
     let normalized := pyNumpyArray matrix
     (List.range (pyNumpyCols matrix)).map (fun c =>
@@ -83,30 +100,35 @@ def pyNumpyTranspose (matrix : List (List Rat)) : List (List Float) :=
 
 /-- Element-wise binary matrix operation. -/
 def pyNumpyBinaryMatrix
+    {α β : Type} [PyNumpyScalar α] [PyNumpyScalar β]
     (f : Float -> Float -> Float)
-    (lhs rhs : List (List Rat)) : List (List Float) :=
+    (lhs : List (List α)) (rhs : List (List β)) : List (List Float) :=
   if pyNumpyIsRectangular lhs && pyNumpyIsRectangular rhs && pyNumpySameShape? lhs rhs then
     List.zipWith (fun lrow rrow =>
-      List.zipWith f (lrow.map ratToFloat) (rrow.map ratToFloat)) lhs rhs
+      List.zipWith f (lrow.map toFloat) (rrow.map toFloat)) lhs rhs
   else
     panic! "ValueError: matrices must have the same rectangular shape"
 
 /-- Add two matrices element-wise. -/
-def pyNumpyAdd (lhs rhs : List (List Rat)) : List (List Float) :=
+def pyNumpyAdd {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (lhs : List (List α)) (rhs : List (List β)) : List (List Float) :=
   pyNumpyBinaryMatrix (· + ·) lhs rhs
 
 /-- Subtract two matrices element-wise. -/
-def pyNumpySubtract (lhs rhs : List (List Rat)) : List (List Float) :=
+def pyNumpySubtract {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (lhs : List (List α)) (rhs : List (List β)) : List (List Float) :=
   pyNumpyBinaryMatrix (· - ·) lhs rhs
 
 /-- Multiply two matrices element-wise. -/
-def pyNumpyMultiply (lhs rhs : List (List Rat)) : List (List Float) :=
+def pyNumpyMultiply {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (lhs : List (List α)) (rhs : List (List β)) : List (List Float) :=
   pyNumpyBinaryMatrix (· * ·) lhs rhs
 
 /-- Scale every element in a matrix by a scalar. -/
-def pyNumpyScale (scalar : Rat) (matrix : List (List Rat)) : List (List Float) :=
+def pyNumpyScale {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (scalar : α) (matrix : List (List β)) : List (List Float) :=
   if pyNumpyIsRectangular matrix then
-    let s := ratToFloat scalar
+    let s := toFloat scalar
     (pyNumpyArray matrix).map (fun row => row.map (fun x => s * x))
   else
     panic! "ValueError: scale() expects a rectangular matrix"
@@ -118,14 +140,15 @@ def pyNumpyDotFloats : List Float -> List Float -> Float
   | _, _ => panic! "ValueError: dot() expects vectors of the same length"
 
 /-- Dot product of two vectors, converting entries to `Float`. -/
-def pyNumpyDot (lhs rhs : List Rat) : Float :=
+def pyNumpyDot {α β} [PyNumpyScalar α] [PyNumpyScalar β] (lhs : List α) (rhs : List β) : Float :=
   if lhs.length = rhs.length then
-    pyNumpyDotFloats (lhs.map ratToFloat) (rhs.map ratToFloat)
+    pyNumpyDotFloats (lhs.map toFloat) (rhs.map toFloat)
   else
     panic! "ValueError: dot() expects vectors of the same length"
 
 /-- Matrix multiplication. -/
-def pyNumpyMatmul (lhs rhs : List (List Rat)) : List (List Float) :=
+def pyNumpyMatmul {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (lhs : List (List α)) (rhs : List (List β)) : List (List Float) :=
   if pyNumpyIsRectangular lhs && pyNumpyIsRectangular rhs && pyNumpyCols lhs = pyNumpyRows rhs then
     let lhsF := pyNumpyArray lhs
     let rhsT := pyNumpyTranspose rhs
@@ -134,19 +157,19 @@ def pyNumpyMatmul (lhs rhs : List (List Rat)) : List (List Float) :=
     panic! "ValueError: matmul() requires compatible rectangular matrices"
 
 /-- Sum all entries in a matrix. -/
-def pyNumpySum (matrix : List (List Rat)) : Float :=
+def pyNumpySum {α} [PyNumpyScalar α] (matrix : List (List α)) : Float :=
   (pyNumpyArray matrix).flatten.foldl (· + ·) 0.0
 
 /-- Mean of all entries in a matrix. -/
-def pyNumpyMean (matrix : List (List Rat)) : Float :=
+def pyNumpyMean {α} [PyNumpyScalar α] (matrix : List (List α)) : Float :=
   let entries := (pyNumpyArray matrix).flatten
   if entries.isEmpty then
     panic! "ValueError: mean() of an empty matrix is undefined"
   else
-    entries.foldl (· + ·) 0.0 / ratToFloat entries.length
+    entries.foldl (· + ·) 0.0 / Rat.toFloat (entries.length : Rat)
 
 /-- Trace of a square matrix. -/
-def pyNumpyTrace (matrix : List (List Rat)) : Float :=
+def pyNumpyTrace {α} [PyNumpyScalar α] (matrix : List (List α)) : Float :=
   if pyNumpyIsSquare matrix then
     let normalized := pyNumpyArray matrix
     (List.range normalized.length).foldl
@@ -156,7 +179,7 @@ def pyNumpyTrace (matrix : List (List Rat)) : Float :=
     panic! "ValueError: trace() expects a square matrix"
 
 /-- Flatten a matrix into a vector. -/
-def pyNumpyFlatten (matrix : List (List Rat)) : List Float :=
+def pyNumpyFlatten {α} [PyNumpyScalar α] (matrix : List (List α)) : List Float :=
   (pyNumpyArray matrix).flatten
 
 end Libraries.numpy

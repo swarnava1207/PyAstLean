@@ -3,72 +3,72 @@ import Libraries
 
 open PyAstLean
 open Libraries
-
-def euclidean_distance : List Int → List Int → PyAstLean.PyExcept Float := fun (p1 : List Int) ↦
-  fun (p2 : List Int) ↦ do
-  if pyLen p1 != pyLen p2 then
-    throw
-        (PyAstLean.PyException.Raise "ValueError" (ToString.toString "Points must have the same number of dimensions"))
-  else
-    let _ := ()
-  -- Using zip, list comprehension, and math.pow
-  let mut sq_diffs :=
-    List.map
-      (fun _pair =>
-        let (a, b) := _pair;
-        Libraries.math.pyMathPow (a -ₚ b) (2 : Int))
-      (pyZip p1 p2)
-  return (Libraries.math.pyMathSqrt (pySum sq_diffs))
-
-def find_nearest_neighbor := fun (target : List Int) ↦ fun (dataset : List (List Int)) ↦
+def process_data := fun (data : List (List Float)) ↦ fun (weights : List (List Float)) ↦
   ((do
       try
         do
-          -- Calculate distances using list comprehension
-          let mut distances := (← List.mapM (fun point => euclidean_distance target point) dataset)
-          -- Find the minimum distance
-          let mut min_dist := pyMin distances
-          -- Find the index of the minimum distance
-          -- Using a loop since index() might not be supported based on tests
-          let mut min_index := -(1 : Int)
-          for _pair in pyEnumerate distances do
-            let (i, d) := _pair
-            if d == min_dist then
-              min_index := i
-              break
-            else
-              let _ := ()
-          return ((min_dist, PyAstLean.pyListGetItem dataset min_index))
+          -- Calculate mean of the dataset
+          let mut m := Libraries.numpy.pyNumpyMean data
+          let _ ← PyAstLean.pyPrintIO [String.append (String.append "" "Dataset Global Mean: ") (ToString.toString m)]
+          -- Center the data by subtracting the mean
+          -- (Using a manual broadcast-like subtraction for this example)
+          -- Note: np.subtract is mapped to pyNumpySubtract
+          let mut centered := Libraries.numpy.pyNumpySubtract data [[m, m], [m, m]]
+          -- Perform matrix multiplication
+          -- Note: np.matmul is mapped to pyNumpyMatmul
+          let mut result := Libraries.numpy.pyNumpyMatmul centered weights
+          return result
       catch caught =>
         if (caught).OfKind == "ValueError" then
           do
             let e := caught
-            let _ ←
-              PyAstLean.pyPrintIO
-                  [String.append (String.append "" "Error calculating distances: ") (ToString.toString e)]
-            return ((-Float.ofScientific 10 true 1, []))
+            let _ ← PyAstLean.pyPrintIO [String.append (String.append "" "Processing failed: ") (ToString.toString e)]
+            -- Fallback to a zero matrix if dimensions fail
+            return (Libraries.numpy.pyNumpyZeros ((2 : Int), (2 : Int)))
         else
           throw caught) :
     PyAstLean.PyExcept _)
 
 def run_example :=
   ((do
+      -- Define a 2x2 dataset and a 2x2 weight matrix
       let mut dataset :=
-        [[(1 : Int), (2 : Int), (3 : Int)], [(4 : Int), (5 : Int), (6 : Int)], [(7 : Int), (8 : Int), (9 : Int)],
-          [(2 : Int), (1 : Int), (4 : Int)]]
-      let mut target_point := [(2 : Int), (3 : Int), (4 : Int)]
-      let mut invalid_point := [(1 : Int), (2 : Int)]
-      let _ ← PyAstLean.pyPrintIO ["Dataset:", dataset]
-      let _ ← PyAstLean.pyPrintIO ["Target Point:", target_point]
-      -- Valid Case
-      let (dist, nearest) ← find_nearest_neighbor target_point dataset
-      let _ ← PyAstLean.pyPrintIO ["Nearest Neighbor to Target:"]
-      let _ ← PyAstLean.pyPrintIO ["Point:", nearest]
-      let _ ← PyAstLean.pyPrintIO ["Distance:", dist]
-      -- Invalid Case
-      let _ ← PyAstLean.pyPrintIO ["\nTesting Invalid Point:"]
-      let (dist_inv, nearest_inv) ← find_nearest_neighbor invalid_point dataset
-      let _ ← PyAstLean.pyPrintIO ["Fallback Distance:", dist_inv]) :
+        [[Float.ofScientific 10 true 1, Float.ofScientific 20 true 1],
+          [Float.ofScientific 30 true 1, Float.ofScientific 40 true 1]]
+      let mut weights :=
+        [[Float.ofScientific 5 true 1, Float.ofScientific 5 true 1],
+          [Float.ofScientific 10 true 1, Float.ofScientific 20 true 1]]
+      let _ ← PyAstLean.pyPrintIO ["=== PyAstLean NumPy Showcase ==="]
+      let _ ← PyAstLean.pyPrintIO [String.append (String.append "" "Input Data: ") (ToString.toString dataset)]
+      let _ ← PyAstLean.pyPrintIO [String.append (String.append "" "Weight Matrix: ") (ToString.toString weights)]
+      -- 1. Main Processing Pipeline
+      let _ ← PyAstLean.pyPrintIO ["\n[1] Running Data Pipeline:"]
+      let mut output := (← process_data dataset weights)
+      let _ ← PyAstLean.pyPrintIO [String.append (String.append "" "Final Result:\n") (ToString.toString output)]
+      -- 2. Utility Operations
+      let _ ← PyAstLean.pyPrintIO ["\n[2] Structural Operations:"]
+      let _ ←
+        PyAstLean.pyPrintIO
+            [String.append (String.append "" "Identity Matrix (2x2):\n")
+                (ToString.toString (Libraries.numpy.pyNumpyEye (2 : Int)))]
+      let _ ←
+        PyAstLean.pyPrintIO
+            [String.append (String.append "" "Flattened Weights: ")
+                (ToString.toString (Libraries.numpy.pyNumpyFlatten weights))]
+      -- 3. Shape Info
+      -- Note: np.shape returns (rows, cols)
+      let (rows, cols) := Libraries.numpy.pyNumpyShape dataset
+      let _ ←
+        PyAstLean.pyPrintIO
+            [String.append
+                (String.append (String.append (String.append "" "Dataset Shape: ") (ToString.toString rows)) "x")
+                (ToString.toString cols)]
+      -- 4. Error Handling Simulation
+      let _ ← PyAstLean.pyPrintIO ["\n[3] Exception Handling (Mismatched Dimensions):"]
+      let mut invalid_data :=
+        [[Float.ofScientific 10 true 1, Float.ofScientific 20 true 1, Float.ofScientific 30 true 1]]
+      -- This should trigger the ValueError in np.matmul(1x3, 2x2)
+      let _ ← process_data invalid_data weights) :
     PyAstLean.PyExcept _)
 
 def main : IO Unit := do
@@ -82,3 +82,51 @@ def main : IO Unit := do
     pure ()
   | .error err =>
     throw (IO.userError (toString err))
+
+/-
+Lean Answer:
+
+=== PyAstLean NumPy Showcase ===
+Input Data: [[1.000000, 2.000000], [3.000000, 4.000000]]
+Weight Matrix: [[0.500000, 0.500000], [1.000000, 2.000000]]
+
+[1] Running Data Pipeline:
+Dataset Global Mean: 2.500000
+Final Result:
+[[-1.250000, -1.750000], [1.750000, 3.250000]]
+
+[2] Structural Operations:
+Identity Matrix (2x2):
+[[1.000000, 0.000000], [0.000000, 1.000000]]
+Flattened Weights: [0.500000, 0.500000, 1.000000, 2.000000]
+Dataset Shape: 2x2
+
+[3] Exception Handling (Mismatched Dimensions):
+Dataset Global Mean: 2.000000
+
+
+---
+
+Python Answer:
+
+=== PyAstLean NumPy Showcase ===
+Input Data: [[1.0, 2.0], [3.0, 4.0]]
+Weight Matrix: [[0.5, 0.5], [1.0, 2.0]]
+
+[1] Running Data Pipeline:
+Dataset Global Mean: 2.5
+Final Result:
+[[-1.25 -1.75]
+ [ 1.75  3.25]]
+
+[2] Structural Operations:
+Identity Matrix (2x2):
+[[1. 0.]
+ [0. 1.]]
+Flattened Weights: [0.5 0.5 1.  2. ]
+Dataset Shape: 2x2
+
+[3] Exception Handling (Mismatched Dimensions):
+Dataset Global Mean: 2.0
+Processing failed: operands could not be broadcast together with shapes (1,3) (2,2)
+-/

@@ -1,57 +1,60 @@
-import math
+import numpy as np
 
-def euclidean_distance(p1, p2):
-    if len(p1) != len(p2):
-        raise ValueError("Points must have the same number of dimensions")
-    
-    # Using zip, list comprehension, and math.pow
-    sq_diffs = [math.pow(a - b, 2) for a, b in zip(p1, p2)]
-    return math.sqrt(sum(sq_diffs))
-
-def find_nearest_neighbor(target, dataset):
+def process_data(data, weights):
     try:
-        # Calculate distances using list comprehension
-        distances = [euclidean_distance(target, point) for point in dataset]
+        # Calculate mean of the dataset
+        m = np.mean(data)
+        print(f"Dataset Global Mean: {m}")
         
-        # Find the minimum distance
-        min_dist = min(distances)
+        # Center the data by subtracting the mean
+        # (Using a manual broadcast-like subtraction for this example)
+        # Note: np.subtract is mapped to pyNumpySubtract
+        centered = np.subtract(data, [[m, m], [m, m]])
         
-        # Find the index of the minimum distance
-        # Using a loop since index() might not be supported based on tests
-        min_index = -1
-        for i, d in enumerate(distances):
-            if d == min_dist:
-                min_index = i
-                break
-                
-        return min_dist, dataset[min_index]
+        # Perform matrix multiplication
+        # Note: np.matmul is mapped to pyNumpyMatmul
+        result = np.matmul(centered, weights)
+        return result
     except ValueError as e:
-        print(f"Error calculating distances: {e}")
-        return -1.0, []
+        print(f"Processing failed: {e}")
+        # Fallback to a zero matrix if dimensions fail
+        return np.zeros((2, 2))
 
 def run_example():
+    # Define a 2x2 dataset and a 2x2 weight matrix
     dataset = [
-        [1, 2, 3],
-        [4, 5, 6],
-        [7, 8, 9],
-        [2, 1, 4]
+        [1.0, 2.0],
+        [3.0, 4.0]
     ]
-    target_point = [2, 3, 4]
-    invalid_point = [1, 2] # 2D point to trigger exception
+    weights = [
+        [0.5, 0.5],
+        [1.0, 2.0]
+    ]
+
+    print("=== PyAstLean NumPy Showcase ===")
+    print(f"Input Data: {dataset}")
+    print(f"Weight Matrix: {weights}")
+
+    # 1. Main Processing Pipeline
+    print("\n[1] Running Data Pipeline:")
+    output = process_data(dataset, weights)
+    print(f"Final Result:\n{output}")
+
+    # 2. Utility Operations
+    print("\n[2] Structural Operations:")
+    print(f"Identity Matrix (2x2):\n{np.eye(2)}")
+    print(f"Flattened Weights: {np.ravel(weights)}")
     
-    print("Dataset:", dataset)
-    print("Target Point:", target_point)
-    
-    # Valid Case
-    dist, nearest = find_nearest_neighbor(target_point, dataset)
-    print("Nearest Neighbor to Target:")
-    print("Point:", nearest)
-    print("Distance:", dist)
-    
-    # Invalid Case
-    print("\nTesting Invalid Point:")
-    dist_inv, nearest_inv = find_nearest_neighbor(invalid_point, dataset)
-    print("Fallback Distance:", dist_inv)
+    # 3. Shape Info
+    # Note: np.shape returns (rows, cols)
+    rows, cols = np.shape(dataset)
+    print(f"Dataset Shape: {rows}x{cols}")
+
+    # 4. Error Handling Simulation
+    print("\n[3] Exception Handling (Mismatched Dimensions):")
+    invalid_data = [[1.0, 2.0, 3.0]] # 1x3 matrix
+    # This should trigger the ValueError in np.matmul(1x3, 2x2)
+    process_data(invalid_data, weights)
 
 if __name__ == "__main__":
     run_example()

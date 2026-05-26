@@ -18,7 +18,16 @@ HOMEDIR = Path.absolute(Path(__name__).parent.parent)
 SRC_DIR = HOMEDIR / "src"
 PY_EXEC = HOMEDIR / ".venv" / "bin" / "python"
 logger = logging.getLogger(__name__)
-SUPPORTED_LIBRARY_IMPORTS = {"math"}
+
+def get_supported_libraries():
+    # Read directory names from the Libraries folder to determine supported libraries
+    libraries_path = Path(__file__).parent.parent / "Libraries"
+    if not libraries_path.exists() or not libraries_path.is_dir():
+        logger.warning("Libraries directory not found at %s; no libraries will be supported.", libraries_path)
+        return set()
+    return {f.name for f in libraries_path.iterdir() if f.is_dir()}
+
+SUPPORTED_LIBRARY_IMPORTS = get_supported_libraries()
 
 COMMENT_PLACEHOLDER_RE = re.compile(
     r"^(?P<indent>\s*)(?:let|def)\s+__pyastlean_comment_(?P<id>\d+)\b.*$"
