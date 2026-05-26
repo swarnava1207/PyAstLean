@@ -651,7 +651,7 @@ def invoke_lean_backend(ast_json, target, check=True, client=None):
     except Exception as err:
         return {"result": False, "error": str(err)}
 
-def translate_to_lean(source_code, target="term", filepath = None):
+def translate_to_lean(source_code, target="term", filepath = None, imports_add = True):
     """Translate Python source to Lean via JSON IR and the Lean backend executable."""
     json_ir = translate_to_json(source_code, filepath)
     ast_json = json.loads(json_ir)
@@ -675,7 +675,17 @@ def translate_to_lean(source_code, target="term", filepath = None):
                 if code_key not in result:
                     return {"result": False, "error": f"Missing '{code_key}' in backend response."}
                 code_parts.append(_inject_comments_into_lean(stmt, result[code_key]))
-            return {"result": True, f"lean_{target}": "\n\n".join(code_parts)}
+            # All imports needed
+            preamble = [
+                "import PyAstLean",
+                "import Libraries",
+                "",
+                "open PyAstLean",
+                "open Libraries",
+                "",
+            ]
+            full_code = "\n".join(preamble) + "\n\n".join(code_parts) if imports_add else "\n\n".join(code_parts)
+            return {"result": True, f"lean_{target}": full_code}
 
         if len(body) == 1:
             result = invoke_lean_backend(body[0], target, client=client)

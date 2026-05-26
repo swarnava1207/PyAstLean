@@ -422,59 +422,7 @@ class Lean4Annotator(cst.CSTTransformer):
                             )
                     if split_lines:
                         return cst.FlattenSentinel(split_lines)
-                self.unpack_counter += 1
-                tmp_name: str = f"__unpack_tmp_{self.unpack_counter}"
-                split_lines: list[cst.BaseStatement] = [
-                    cst.SimpleStatementLine(
-                        body=[
-                            cst.Assign(
-                                targets=[cst.AssignTarget(target=cst.Name(tmp_name))],
-                                value=stmt.value,
-                            )
-                        ]
-                    )
-                ]
-                for idx, element in enumerate(target.elements):
-                    if not isinstance(element.value, cst.Name):
-                        continue
-                    rhs = cst.Subscript(
-                        value=cst.Name(tmp_name),
-                        slice=[
-                            cst.SubscriptElement(
-                                slice=cst.Index(value=cst.Integer(str(idx)))
-                            )
-                        ],
-                    )
-                    best_name: cst.BaseExpression | None = self._get_best_ann(element.value.value)
-                    if best_name:
-                        split_lines.append(
-                            cst.SimpleStatementLine(
-                                body=[
-                                    cst.AnnAssign(
-                                        target=element.value,
-                                        annotation=cst.Annotation(annotation=best_name),
-                                        value=rhs,
-                                        equal=cst.AssignEqual(
-                                            whitespace_before=cst.SimpleWhitespace(" "),
-                                            whitespace_after=cst.SimpleWhitespace(" "),
-                                        ),
-                                    )
-                                ]
-                            )
-                        )
-                    else:
-                        split_lines.append(
-                            cst.SimpleStatementLine(
-                                body=[
-                                    cst.Assign(
-                                        targets=[cst.AssignTarget(target=element.value)],
-                                        value=rhs,
-                                    )
-                                ]
-                            )
-                        )
-                if split_lines:
-                    return cst.FlattenSentinel(split_lines)
+                return updated_node
 
         if isinstance(stmt, cst.AnnAssign) and isinstance(stmt.target, cst.Name):
             curr_type: str = node_to_str(stmt.annotation.annotation)

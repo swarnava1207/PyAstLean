@@ -99,7 +99,7 @@ def subscriptSyntax : (kind : SyntaxNodeKind) → Json →
                 `($getIdent $valueCode $iStx)
             | _ =>
                 let sliceCode ← getCode sliceJson `term
-                let getIdent := mkIdent `getElem!
+                let getIdent := mkIdent `PyAstLean.pyListGetItem
                 `($getIdent $valueCode $sliceCode)
         | .ok "UnaryOp" =>
             let op := sliceJson.getObjValAs? String "op"
@@ -122,19 +122,19 @@ def subscriptSyntax : (kind : SyntaxNodeKind) → Json →
                             `($getIdent $valueCode $sliceCode)
                     | _ =>
                         let sliceCode ← getCode sliceJson `term
-                        let getIdent := mkIdent `getElem!
+                        let getIdent := mkIdent `PyAstLean.pyListGetItem
                         `($getIdent $valueCode $sliceCode)
                 | _ =>
                     let sliceCode ← getCode sliceJson `term
-                    let getIdent := mkIdent `getElem!
+                    let getIdent := mkIdent `PyAstLean.pyListGetItem
                     `($getIdent $valueCode $sliceCode)
             else
                 let sliceCode ← getCode sliceJson `term
-                let getIdent := mkIdent `getElem!
+                let getIdent := mkIdent `PyAstLean.pyListGetItem
                 `($getIdent $valueCode $sliceCode)
         | _ =>
             let sliceCode ← getCode sliceJson `term
-            let getIdent := mkIdent `getElem!
+            let getIdent := mkIdent `PyAstLean.pyListGetItem
             `($getIdent $valueCode $sliceCode)
   | _, _ => throwError s!"Unsupported syntax category for Subscript node"
 

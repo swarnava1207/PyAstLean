@@ -23,9 +23,7 @@ def listCompTargetLambda (targetJson : Json) (body : TSyntax `term) :
           let leftIdent ← getCode leftJson `ident
           let rightIdent ← getCode rightJson `ident
           let pairIdent := mkIdent (← freshName `_pair)
-          `(fun $pairIdent =>
-              let ($leftIdent, $rightIdent) := $pairIdent
-              $body)
+          `(fun $pairIdent => let ($leftIdent, $rightIdent) := $pairIdent; $body)
       | _, _ =>
           throwError "Only two-element tuple unpacking targets are supported in comprehensions."
   | _ =>
@@ -75,7 +73,11 @@ def lowerComprehensionClauses (eltJson : Json) (generators : List Json) :
       if rest.isEmpty then
         let eltCode ← getCode eltJson `term
         let mapper ← listCompTargetLambda targetJson eltCode
-        `(List.map $mapper $iterCode)
+        if jsonUsesMonadicEffect eltJson then
+          let mapMIdent := mkIdent ``List.mapM
+          `($mapMIdent $mapper $iterCode)
+        else
+          `(List.map $mapper $iterCode)
       else
         let nested ← lowerComprehensionClauses eltJson rest
         let binder ← listCompTargetLambda targetJson nested

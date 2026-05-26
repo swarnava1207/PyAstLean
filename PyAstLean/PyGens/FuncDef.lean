@@ -53,7 +53,7 @@ partial def functionArgTypeSyntax? (annotationJson : Json) : PygenM (Option (TSy
       | "int" | "Int" => return some (mkIdent ``Int)
       | "bool" | "Bool" => return some (mkIdent ``Bool)
       | "str" | "String" => return some (mkIdent ``String)
-      | "float" | "Float" => return some (mkIdent ``Rat)
+      | "float" | "Float" => return some (mkIdent ``Float)
       | "Any" => return none -- let Lean handle the type inference for now
       | _ => return none
   | "Subscript" =>

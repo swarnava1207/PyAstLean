@@ -33,14 +33,32 @@ def numToStx (mantissa : Int) (exponent : Nat) : MetaM <| TSyntax `term := do
         let ratIdent := mkIdent ``Rat
         `(($mantissaStx : $ratIdent) / $exponentStx)
 
+/-- Preserve Python float literals as Lean `Float`s, even when the decimal part is `.0`. -/
+def floatNumToStx (mantissa : Int) (exponent : Nat) : MetaM <| TSyntax `term := do
+  let floatScientificIdent := mkIdent ``Float.ofScientific
+  let magnitude := Int.natAbs mantissa
+  let magnitudeStx := Syntax.mkNumLit (toString magnitude)
+  let exponentStx := Syntax.mkNumLit (toString exponent)
+  let base ← `($floatScientificIdent $magnitudeStx true $exponentStx)
+  if mantissa < 0 then
+    `(- $base:term)
+  else
+    pure base
+
 @[pygen "Constant"]
 def constantSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
   | `term, json => do
     let .ok value := json.getObjValAs? Json "value" | throwError
       s!"Constant node does not have a 'value' field or it is not a JSON value: {json}"
+    let isPythonFloat :=
+      json.getObjValAs? String "python_literal_kind" == .ok "float"
     match value with
-    | .num (JsonNumber.mk mantissa exponent) => numToStx mantissa exponent
+    | .num (JsonNumber.mk mantissa exponent) =>
+        if isPythonFloat then
+          floatNumToStx mantissa exponent
+        else
+          numToStx mantissa exponent
     | .str s => return Syntax.mkStrLit s
     | .bool b => do
         let trueStx := mkIdent ``true

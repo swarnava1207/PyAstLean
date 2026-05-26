@@ -302,10 +302,13 @@ class ASTToJsonLeanVisitorBase:
     
     def visit_Constant(self, node):
         """Translates ast.Constant (e.g., 42, "hello") to a JSON IR node."""
-        return {
+        result = {
             "node_type": "Constant",
             "value": node.value
         }
+        if isinstance(node.value, float):
+            result["python_literal_kind"] = "float"
+        return result
         
     def visit_Expr(self, node):
         """Translates ast.Expr (e.g., a standalone expression) to a JSON IR node."""

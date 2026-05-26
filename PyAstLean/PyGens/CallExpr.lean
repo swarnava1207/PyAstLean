@@ -455,7 +455,9 @@ def inferSimpleValueTypeSyntax? (json : Json) : PygenM (Option (TSyntax `term)) 
         s!"Constant node does not have a 'value' field or it is not a JSON value: {json}"
       match value with
       | .num (JsonNumber.mk _ exponent) =>
-          if exponent == 0 then
+          if json.getObjValAs? String "python_literal_kind" == .ok "float" then
+            return some (mkIdent ``Float)
+          else if exponent == 0 then
             return some (mkIdent ``Int)
           else
             return some (mkIdent ``Rat)
@@ -1031,7 +1033,10 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
       `(doElem| let _ ← $t:term)
     else
       let t ← buildApplied allArgs
-      `(doElem| let _ := $t)
+      if basicJsonUsesMonadicEffect json then
+        `(doElem| let _ ← $t:term)
+      else
+        `(doElem| let _ := $t)
   | _, _ => throwError s!"Unsupported syntax category for Call node"
 
 @[pygen "Attribute"]

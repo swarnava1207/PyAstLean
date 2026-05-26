@@ -4,6 +4,16 @@ import PyAstLean.PyAPI.Operators
 
 namespace PyAstLean
 
+/-- `Float` does not ship with an `Ord` instance, but Python's `min`/`max` need one. -/
+instance : Ord Float where
+  compare x y :=
+    if x < y then
+      Ordering.lt
+    else if x > y then
+      Ordering.gt
+    else
+      Ordering.eq
+
 /--
 Python-style eager `map`.
 

@@ -165,16 +165,25 @@ def ifSyntax : (kind : SyntaxNodeKind) → Json →
         let mainIdent := mkIdent `main
         if bodyNeedsExceptionMonad bodyElems then
           let exceptIdent := mkIdent ``PyAstLean.PyExcept
-          `(command| def $mainIdent := ((do
-              $[$bodyStxArray:doElem]*) : $exceptIdent _))
+          let ioUserErrorIdent := mkIdent ``IO.userError
+          `(command| def $mainIdent : IO Unit := do
+              let result ← (((do
+                  $[$bodyStxArray:doElem]*
+                  pure ()
+                ) : $exceptIdent Unit)).run
+              match result with
+              | .ok _ => pure ()
+              | .error err => throw ($ioUserErrorIdent (toString err)))
         else if bodyNeedsIOMonad bodyElems then
-          let ioIdent := mkIdent ``IO
-          `(command| def $mainIdent := ((do
-              $[$bodyStxArray:doElem]*) : $ioIdent _))
+          `(command| def $mainIdent : IO Unit := do
+              $[$bodyStxArray:doElem]*
+              pure ())
         else
           let idRunIdent := mkIdent ``Id.run
-          `(command| def $mainIdent := $idRunIdent do
-              $[$bodyStxArray:doElem]*)
+          `(command| def $mainIdent : IO Unit := do
+              let _ := $idRunIdent do
+                $[$bodyStxArray:doElem]*
+              pure ())
     | _, _ => throwError s!"Unsupported syntax category for If node"
 
 

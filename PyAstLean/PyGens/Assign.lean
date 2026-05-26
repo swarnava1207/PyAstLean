@@ -5,6 +5,32 @@ open Lean Meta Elab Term Qq Std
 
 namespace PyAstLean
 
+/-- Read a simple two-name tuple assignment target when present. -/
+def tupleAssignTargetNames? (target : Json) : PygenM (Option (TSyntax `ident × TSyntax `ident)) := do
+  unless jsonNodeType? target == some "Tuple" do
+    return none
+  let .ok elts := target.getObjValAs? (Array Json) "elts" | throwError
+    s!"Tuple assignment target does not have an 'elts' field or it is not a JSON value: {target}"
+  match elts[0]?, elts[1]? with
+  | some leftJson, some rightJson =>
+      if jsonNodeType? leftJson == some "Name" && jsonNodeType? rightJson == some "Name" then
+        let leftIdent ← getCode leftJson `ident
+        let rightIdent ← getCode rightJson `ident
+        return some (leftIdent, rightIdent)
+      else
+        throwError "Only two-name tuple assignment targets are supported right now."
+  | _, _ =>
+      throwError "Only two-element tuple assignment targets are supported right now."
+
+/-- Emit either a fresh `let mut` or a reassignment for one local binding. -/
+def bindOrAssignLocal (nameIdent : TSyntax `ident) (rhs : TSyntax `term) : PygenM (TSyntax `doElem) := do
+  if ← hasVar nameIdent.getId then
+    `(doElem| $nameIdent:ident := $rhs)
+  else
+    let stx ← `(doElem| let mut $nameIdent:ident := $rhs)
+    addVar nameIdent.getId
+    pure stx
+
 /-- Simple returned expressions can stay unparenthesized; more complex or effectful ones
 keep parentheses so Lean parses multiline `return` expressions reliably. -/
 def shouldParenthesizeReturnValue (value : Json) : Bool :=
@@ -31,24 +57,45 @@ def assignSyntax : (kind : SyntaxNodeKind) → Json →
     | `doElem, json => do
         let .ok target := json.getObjVal? "target" | throwError
           s!"Assign node does not have a 'target' field or it is not a JSON value: {json}"
-        let nameIdent ← getCode target `ident
         let .ok value := json.getObjVal? "value" | throwError
           s!"Assign node does not have a 'value' field or it is not a JSON value: {json}"
-        let rhs ←
-          if jsonUsesIOEffect value then
-            inlineIOTerm value
-          else
+        match ← tupleAssignTargetNames? target with
+        | some (leftIdent, rightIdent) => do
             let valueStx ← getCode value `term
-            if jsonUsesMonadicEffect value then
-              `((← $valueStx))
+            let leftFresh := !(← hasVar leftIdent.getId)
+            let rightFresh := !(← hasVar rightIdent.getId)
+            if leftFresh && rightFresh then
+              addVar leftIdent.getId
+              addVar rightIdent.getId
+              if jsonUsesIOEffect value || jsonUsesMonadicEffect value then
+                `(doElem| let ($leftIdent, $rightIdent) ← $valueStx:term)
+              else
+                `(doElem| let ($leftIdent, $rightIdent) := $valueStx)
             else
-              pure valueStx
-        if ← hasVar nameIdent.getId then
-            `(doElem| $nameIdent:ident := $rhs)
-        else
-            let stx ← `(doElem| let mut $nameIdent:ident := $rhs)
-            addVar nameIdent.getId
-            return stx
+              let tmpIdent := mkIdent (← freshName `__unpack_tmp)
+              let bindTmp ←
+                if jsonUsesIOEffect value || jsonUsesMonadicEffect value then
+                  `(doElem| let $tmpIdent:ident ← $valueStx:term)
+                else
+                  `(doElem| let $tmpIdent:ident := $valueStx)
+              let leftBind ← bindOrAssignLocal leftIdent (← `(Prod.fst $tmpIdent))
+              let rightBind ← bindOrAssignLocal rightIdent (← `(Prod.snd $tmpIdent))
+              `(doElem| do
+                $bindTmp:doElem
+                $leftBind:doElem
+                $rightBind:doElem)
+        | none => do
+            let nameIdent ← getCode target `ident
+            let rhs ←
+              if jsonUsesIOEffect value then
+                inlineIOTerm value
+              else
+                let valueStx ← getCode value `term
+                if jsonUsesMonadicEffect value then
+                  `((← $valueStx))
+                else
+                  pure valueStx
+            bindOrAssignLocal nameIdent rhs
     | _, _ => throwError s!"Unsupported syntax category for Assign node"
 
 /--
@@ -100,9 +147,7 @@ def returnSyntax : (kind : SyntaxNodeKind) → Json →
             else
               let valueStx ← getCode value `term
               if jsonUsesMonadicEffect value then
-                `(doElem| do
-                  let __py_ret ← $valueStx:term
-                  return __py_ret)
+                `(doElem| return (← $valueStx:term))
               else
                 if shouldParenthesizeReturnValue value then
                   `(doElem| return ($valueStx))

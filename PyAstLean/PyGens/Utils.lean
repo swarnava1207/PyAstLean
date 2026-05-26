@@ -227,12 +227,8 @@ def sequenceDoElems (elems : Array (TSyntax `doElem)) (fallback : TSyntax `doEle
     PygenM (TSyntax `doElem) := do
   if elems.isEmpty then
     return fallback
-  let mut result := elems.back?.getD fallback
-  for elem in elems.toList.dropLast.reverse do
-    result ← `(doElem| do
-      $elem:doElem
-      $result:doElem)
-  return result
+  `(doElem| do
+    $[$elems:doElem]*)
 
 /-- Emit an explicit no-op statement inside `do` notation. -/
 def noopDoElemSyntax : PygenM (TSyntax `doElem) := do

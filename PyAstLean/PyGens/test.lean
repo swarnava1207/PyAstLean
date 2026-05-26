@@ -1,59 +1,84 @@
--- This file is for testing the outputs
+import PyAstLean
+import Libraries
 
-import PyAstLean.PyGens
-import PyAstLean.PyGens.Basic
-namespace PyAstLean
+open PyAstLean
+open Libraries
 
-def sqrt_demo := fun x ↦ Libraries.math.pyMathSqrt x
+def euclidean_distance : List Int → List Int → PyAstLean.PyExcept Float := fun (p1 : List Int) ↦
+  fun (p2 : List Int) ↦ do
+  if pyLen p1 != pyLen p2 then
+    throw
+        (PyAstLean.PyException.Raise "ValueError" (ToString.toString "Points must have the same number of dimensions"))
+  else
+    let _ := ()
+  -- Using zip, list comprehension, and math.pow
+  let mut sq_diffs :=
+    List.map
+      (fun _pair =>
+        let (a, b) := _pair;
+        Libraries.math.pyMathPow (a -ₚ b) (2 : Int))
+      (pyZip p1 p2)
+  return (Libraries.math.pyMathSqrt (pySum sq_diffs))
 
-def read_line : IO String := do
-  let mut raw ← PyAstLean.pyInputIO ""
-  return raw
-
-def read_prompted : IO String := do
-  return ((← PyAstLean.pyInputIO "n = "))
-
-def read_nested_int :=
+def find_nearest_neighbor := fun (target : List Int) ↦ fun (dataset : List (List Int)) ↦
   ((do
-      let mut a ←
-        ((do
-              let __py_input0 ← PyAstLean.pyInputIO "Enter a: "
-              return PyAstLean.pyInt __py_input0) :
-            IO _)
-      let mut b ←
-        ((do
-              let __py_input0 ← PyAstLean.pyInputIO "Enter b: "
-              return PyAstLean.pyInt __py_input0) :
-            IO _)
-      let mut c ← PyAstLean.pyInputIO "Enter c: "
-      a := a +ₚ b
-      return ((a, c))) :
-    IO _)
+      try
+        do
+          -- Calculate distances using list comprehension
+          let mut distances := (← List.mapM (fun point => euclidean_distance target point) dataset)
+          -- Find the minimum distance
+          let mut min_dist := pyMin distances
+          -- Find the index of the minimum distance
+          -- Using a loop since index() might not be supported based on tests
+          let mut min_index := -(1 : Int)
+          for _pair in pyEnumerate distances do
+            let (i, d) := _pair
+            if d == min_dist then
+              min_index := i
+              break
+            else
+              let _ := ()
+          return ((min_dist, PyAstLean.pyListGetItem dataset min_index))
+      catch caught =>
+        if (caught).OfKind == "ValueError" then
+          do
+            let e := caught
+            let _ ←
+              PyAstLean.pyPrintIO
+                  [String.append (String.append "" "Error calculating distances: ") (ToString.toString e)]
+            return ((-Float.ofScientific 10 true 1, []))
+        else
+          throw caught) :
+    PyAstLean.PyExcept _)
 
-def echo_input : IO Int := do
-  let _ ←
-    ((do
-          let __py_input0 ← PyAstLean.pyInputIO ""
-          let __py_result ← PyAstLean.pyPrintIO [__py_input0]
-          return __py_result) :
-        IO _)
-  return (0 : Int)
-
-def input_inside_print :=
+def run_example :=
   ((do
-      let _ ←
-        ((do
-              let __py_input0 ← PyAstLean.pyInputIO ""
-              let __py_result ←
-                PyAstLean.pyPrintIO
-                    [String.append (String.append "" "Enter a number: ")
-                        (ToString.toString (PyAstLean.pyInt __py_input0))]
-              return __py_result) :
-            IO _)) :
-    IO _)
-
-end PyAstLean
+      let mut dataset :=
+        [[(1 : Int), (2 : Int), (3 : Int)], [(4 : Int), (5 : Int), (6 : Int)], [(7 : Int), (8 : Int), (9 : Int)],
+          [(2 : Int), (1 : Int), (4 : Int)]]
+      let mut target_point := [(2 : Int), (3 : Int), (4 : Int)]
+      let mut invalid_point := [(1 : Int), (2 : Int)]
+      let _ ← PyAstLean.pyPrintIO ["Dataset:", dataset]
+      let _ ← PyAstLean.pyPrintIO ["Target Point:", target_point]
+      -- Valid Case
+      let (dist, nearest) ← find_nearest_neighbor target_point dataset
+      let _ ← PyAstLean.pyPrintIO ["Nearest Neighbor to Target:"]
+      let _ ← PyAstLean.pyPrintIO ["Point:", nearest]
+      let _ ← PyAstLean.pyPrintIO ["Distance:", dist]
+      -- Invalid Case
+      let _ ← PyAstLean.pyPrintIO ["\nTesting Invalid Point:"]
+      let (dist_inv, nearest_inv) ← find_nearest_neighbor invalid_point dataset
+      let _ ← PyAstLean.pyPrintIO ["Fallback Distance:", dist_inv]) :
+    PyAstLean.PyExcept _)
 
 def main : IO Unit := do
-  let x <- PyAstLean.read_nested_int
-  IO.println s!"returned: {x}"
+  let result ←
+    (((do
+            let _ ← run_example
+            pure ()) :
+          PyAstLean.PyExcept Unit)).run
+  match result with
+  | .ok _ =>
+    pure ()
+  | .error err =>
+    throw (IO.userError (toString err))

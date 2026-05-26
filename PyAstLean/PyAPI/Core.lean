@@ -21,7 +21,7 @@ def OfKind (exc : PyException) : String :=
 end PyException
 
 /-- Concrete exception monad used for translated Python code that can raise. -/
-abbrev PyExcept (α : Type) := ExceptT PyException Id α
+abbrev PyExcept (α : Type) := ExceptT PyException IO α
 
 instance : ToString PyException where
   toString exc :=
@@ -39,14 +39,20 @@ def pyRange (stop : Int) (start : Int := 0) (step : Int := 1) : List Int := do
   else
     []
 
-/-- Python-style indexing/slicing for lists. -/
-def pyListGetItem {α : Type} [BEq α] (xs : List α) (idx : Int) : Option α :=
+/-- Python-style list indexing with negative indices and runtime failure on out-of-bounds access. -/
+def pyListGetItem {α : Type} [Inhabited α] (xs : List α) (idx : Int) : α :=
   let len := xs.length
-  let trueIdx := idx % len |>.toNat
-  let atIdx x := x.snd == trueIdx
-  xs.zipIdx
-  |>.find? (p := atIdx)
-  |>.map (·.fst)
+  if len == 0 then
+    panic! "IndexError: list index out of range"
+  else
+    let lenInt : Int := len
+    let trueIdx := if idx < 0 then lenInt + idx else idx
+    if trueIdx < 0 || trueIdx >= lenInt then
+      panic! "IndexError: list index out of range"
+    else
+      match xs[trueIdx.toNat]? with
+      | some value => value
+      | none => panic! "IndexError: list index out of range"
 
 /-- Python-style slicing for lists. -/
 def pyListSlice {α : Type} (xs : List α) (start : Option Int) (stop : Option Int) : List α :=
@@ -62,9 +68,16 @@ def pyListSlice {α : Type} (xs : List α) (start : Option Int) (stop : Option I
 /-- Python-style indexing/slicing for strings. -/
 def pyStringGetItem (s : String) (idx : Int) : Option Char :=
   let lst := s.toList
-  match pyListGetItem lst idx with
-  | some c => some c
-  | none => none
+  let len := lst.length
+  if len == 0 then
+    none
+  else
+    let lenInt : Int := len
+    let trueIdx := if idx < 0 then lenInt + idx else idx
+    if trueIdx < 0 || trueIdx >= lenInt then
+      none
+    else
+      lst[trueIdx.toNat]?
 
 /-- Python-style slicing for strings. -/
 def pyStringSlice (s : String) (start : Option Int) (stop : Option Int) : String :=
