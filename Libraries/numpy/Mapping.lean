@@ -1,4 +1,6 @@
 import Mathlib
+import Libraries.numpy.Analysis
+import Libraries.numpy.Creation
 import Libraries.numpy.NumpyDef
 
 namespace Libraries.numpy
@@ -9,22 +11,72 @@ def pythonNumpyMemberMap? (member : String) : Option Lean.Name :=
   | "array" => some ``pyNumpyArray
   | "asarray" => some ``pyNumpyArray
   | "shape" => some ``pyNumpyShape
+  | "empty" => some ``pyNumpyEmpty
+  | "full" => some ``pyNumpyFull
+  | "arange" => some ``pyNumpyArange
+  | "linspace" => some ``pyNumpyLinspace
+  | "logspace" => some ``pyNumpyLogspace
+  | "meshgrid" => some ``pyNumpyMeshgrid
   | "zeros" => some ``pyNumpyZeros
   | "ones" => some ``pyNumpyOnes
   | "eye" => some ``pyNumpyEye
   | "identity" => some ``pyNumpyEye
+  | "reshape" => some ``pyNumpyReshape
   | "transpose" => some ``pyNumpyTranspose
+  | "expand_dims" => some ``pyNumpyExpandDims
+  | "squeeze" => some ``pyNumpySqueeze
+  | "concatenate" => some ``pyNumpyConcatenate
+  | "vstack" => some ``pyNumpyVstack
+  | "hstack" => some ``pyNumpyHstack
+  | "split" => some ``pyNumpySplit
+  | "tile" => some ``pyNumpyTile
   | "add" => some ``pyNumpyAdd
   | "subtract" => some ``pyNumpySubtract
   | "multiply" => some ``pyNumpyMultiply
   | "scale" => some ``pyNumpyScale
   | "dot" => some ``pyNumpyDot
   | "matmul" => some ``pyNumpyMatmul
+  | "min" => some ``pyNumpyMin
+  | "max" => some ``pyNumpyMax
+  | "argmin" => some ``pyNumpyArgmin
+  | "argmax" => some ``pyNumpyArgmax
+  | "median" => some ``pyNumpyMedian
   | "sum" => some ``pyNumpySum
   | "mean" => some ``pyNumpyMean
+  | "var" => some ``pyNumpyVar
+  | "std" => some ``pyNumpyStd
+  | "percentile" => some ``pyNumpyPercentile
+  | "clip" => some ``pyNumpyClip
+  | "round" => some ``pyNumpyRound
+  | "exp" => some ``pyNumpyExp
+  | "log" => some ``pyNumpyLog
+  | "log10" => some ``pyNumpyLog10
+  | "log2" => some ``pyNumpyLog2
+  | "sqrt" => some ``pyNumpySqrt
+  | "norm" => some ``pyNumpyNorm
   | "trace" => some ``pyNumpyTrace
   | "flatten" => some ``pyNumpyFlatten
   | "ravel" => some ``pyNumpyFlatten
+  | "any" => some ``pyNumpyAny
+  | "all" => some ``pyNumpyAll
+  | "isin" => some ``pyNumpyIsin
+  | "logical_and" => some ``pyNumpyLogicalAnd
+  | "logical_or" => some ``pyNumpyLogicalOr
+  | "logical_not" => some ``pyNumpyLogicalNot
+  | "isclose" => some ``pyNumpyIsclose
+  | "sort" => some ``pyNumpySort
+  | "argsort" => some ``pyNumpyArgsort
+  | "searchsorted" => some ``pyNumpySearchsorted
+  | "unique" => some ``pyNumpyUnique
+  | "where" => some ``pyNumpyWhere
+  | "nonzero" => some ``pyNumpyNonzero
+  | "argwhere" => some ``pyNumpyArgwhere
+  | "extract" => some ``pyNumpyExtract
+  | "take" => some ``pyNumpyTake
+  | "put" => some ``pyNumpyPut
+  | "det" => some ``pyNumpyDet
+  | "inv" => some ``pyNumpyInv
+  | "solve" => some ``pyNumpySolve
   | _ => none
 
 end Libraries.numpy
