@@ -1,17 +1,17 @@
-"""Top-level state threading and the `main`/`_main` entry-point rename.
+"""Top-level state threading and the `main`/`main'` entry-point rename.
 
 Lean has no top-level statement execution: a bare `if`/`for`/`while`/`match` at module
 scope cannot mutate a module global the way Python does. We instead treat each such
 top-level block as a *state transformer* over the names it mutates — this module performs
 the source-level analysis (write-sets, SSA-style versioning of re-initialized names, and
-the `main`/`_main` collision rename) and annotates the JSON IR. The Lean backend reads
+the `main`/`main'` collision rename) and annotates the JSON IR. The Lean backend reads
 these annotations (`mutated_names`, `state_init`, `reexport_names`, `block_id`,
 `is_main_guard`) and decides how to emit the fold / tuple-if / re-export syntax.
 
 Python is good at this kind of whole-module name analysis, so it lives here rather than in
 the Lean codegen. The two public entry points, applied to a `Module` JSON node, are:
 
-- `annotate_main_entrypoint(module_json)` — resolve the `main`/`_main` collision.
+- `annotate_main_entrypoint(module_json)` — resolve the `main`/`main'` collision.
 - `annotate_toplevel_state(module_json)` — thread state through top-level blocks.
 """
 
@@ -232,13 +232,22 @@ def _rename_name_refs(node, old, new):
             _rename_name_refs(item, old, new)
 
 
+# Lean's entry point is `main`, but Python's `main()` is an ordinary function. When both a
+# `def main()` and a `__main__` guard exist, the Python function must yield the Lean name
+# `main` to the guard. We rename it to `main'` rather than `_main`: a Python identifier
+# cannot contain `'`, so `main'` can never collide with a user-defined helper (whereas a
+# user `_main` helper is perfectly legal and would collide). `main'` is a valid Lean name.
+MAIN_RENAME_TARGET = "main'"
+
+
 def annotate_main_entrypoint(module_json):
     """Resolve the Python/Lean `main` naming collision and mark the `__main__` guard.
 
     - A top-level `def main()` with NO guard keeps the name `main` (importable).
     - A `__main__` guard with NO `def main` becomes Lean's `main` (the guard body).
-    - When BOTH exist, the Python `def main` is renamed to `_main` (plus all
-      references) so the guard can own Lean's entry-point name `main`.
+    - When BOTH exist, the Python `def main` is renamed to `main'` (plus all references)
+      so the guard can own Lean's entry-point name `main`. `'` is unusable in a Python
+      identifier, so `main'` cannot clash with any user-defined name (e.g. a `_main` helper).
     The guard node is tagged `is_main_guard` so the backend lowers it to `main`.
     """
     if not (isinstance(module_json, dict) and module_json.get("node_type") == "Module"):
@@ -262,9 +271,9 @@ def annotate_main_entrypoint(module_json):
         guard["is_main_guard"] = True
         if has_main_def:
             # Collision: the Python `main` function yields the name to the guard.
-            # Rewrite every reference (call sites) `main` -> `_main` ...
-            _rename_name_refs(module_json, "main", "_main")
+            # Rewrite every reference (call sites) `main` -> `main'` ...
+            _rename_name_refs(module_json, "main", MAIN_RENAME_TARGET)
             # ... and the FunctionDef's own name, which is a plain field, not a Name node.
             for s in body:
                 if isinstance(s, dict) and s.get("node_type") == "FunctionDef" and s.get("name") == "main":
-                    s["name"] = "_main"
+                    s["name"] = MAIN_RENAME_TARGET
