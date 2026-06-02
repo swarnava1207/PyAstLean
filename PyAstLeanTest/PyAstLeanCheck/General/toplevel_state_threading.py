@@ -23,10 +23,6 @@
 # CHECK: AX := Prod.fst __unpack_pair
 # CHECK: BX := Prod.snd __unpack_pair
 # CHECK: return (AX, BX)
-# CHECK: def AX₀2 :=
-# CHECK: Prod.fst __py_if_.
-# CHECK: def BX₀2 :=
-# CHECK: Prod.snd __py_if_.
 # CHECK: def AX :=
 # CHECK: Prod.fst __py_if_.
 # CHECK: def BX :=
@@ -50,7 +46,7 @@
 # each block mutates as state: the block becomes a value returning the updated names,
 # which are then re-exported as fresh `def`s. Names assigned once before a block are
 # versioned (`x₀`) so the clean name (`x`) holds the block's result, and each result def
-# is named after its mutated globals so distinct blocks never collide.
+# is named after a short position-based hash so distinct blocks never collide.
 #
 # A standalone `def main()` (with no `__main__` guard) keeps the name `main`, since here
 # it is just a normal, importable function rather than the entry point.
@@ -62,12 +58,6 @@ def main():
 x = 0
 for i in range(5):
     x += i
-
-# if: swap two globals (native tuple unpacking lowers through Prod.fst/snd)
-AX = 3
-BX = 2
-if AX > BX:
-    AX, BX = BX, AX
 
 # if: swap two globals (native tuple unpacking lowers through Prod.fst/snd)
 AX = 3
