@@ -294,17 +294,32 @@ class ASTToJsonLeanVisitorBase:
             "operand": self.visit(node.operand)
         }
 
-    def visit_Compare(self, node):
-        """Translates ast.Compare (e.g., a <= b) to a JSON IR node."""
-        if len(node.ops) != 1 or len(node.comparators) != 1:
-            raise NotImplementedError("Chained comparisons are not supported.")
-        op = self._map_ast_type(node.ops[0], COMPAREOP_MAP, "Comparison operator")
-
+    def _single_compare(self, left_json, op_ast, right_json):
+        """Build one Compare IR node from already-visited operands."""
         return {
             "node_type": "Compare",
-            "op": op,
-            "left": self.visit(node.left),
-            "right": self.visit(node.comparators[0])
+            "op": self._map_ast_type(op_ast, COMPAREOP_MAP, "Comparison operator"),
+            "left": left_json,
+            "right": right_json,
+        }
+
+    def visit_Compare(self, node):
+        """Translates ast.Compare (e.g., a <= b) to a JSON IR node.
+
+        Chained comparisons like `a < b < c` are expanded to `(a < b) and (b < c)`, the
+        same desugaring Python uses (each middle operand is evaluated once at the IR level
+        here; side-effecting middle operands are out of scope)."""
+        operands = [self.visit(node.left)] + [self.visit(c) for c in node.comparators]
+        comparisons = [
+            self._single_compare(operands[i], node.ops[i], operands[i + 1])
+            for i in range(len(node.ops))
+        ]
+        if len(comparisons) == 1:
+            return comparisons[0]
+        return {
+            "node_type": "BoolOp",
+            "op": "and",
+            "values": comparisons,
         }
     
     def visit_Constant(self, node):
@@ -379,6 +394,15 @@ class ASTToJsonLeanVisitorBase:
             and not keywords_json
         ):
             return {"node_type": "Set", "elts": []}
+        # `list()` / `tuple()` with no arguments is the empty list; `list(x)`/`tuple(x)` stay
+        # calls (lowered to `pyList`).
+        if (
+            func_json.get("node_type") == "Name"
+            and func_json.get("id") in {"list", "tuple"}
+            and not args_json
+            and not keywords_json
+        ):
+            return {"node_type": "List", "elts": []}
         return {
             "node_type": "Call",
             "func": func_json,

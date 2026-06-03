@@ -41,6 +41,8 @@ def pythonMethodMap? (attr : String) : Option Lean.Name :=
   | "items"      => some ``pyItems
   | "keys"       => some ``pyKeys
   | "values"     => some ``pyValues
+  -- Dunder methods
+  | "__len__"    => some ``pyLen
   -- Common
   | "clear"      => some ``pyClear
   | "update"     => some ``pyUpdate

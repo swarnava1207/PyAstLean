@@ -339,7 +339,8 @@ def whileSyntax : (kind : SyntaxNodeKind) → Json →
         for elem in bodyElems do
             let elemStx ← getCode elem `doElem
             bodyStxArray := appendDoElems bodyStxArray elemStx
-        `(doElem| while $testStx do
+        -- Parenthesize the test so its last token never glues to the `do` keyword.
+        `(doElem| while ($testStx) do
             $[$bodyStxArray:doElem]*)
     | `command, json => do
         -- A top-level `while` that mutates module globals is a state transformer.
@@ -373,7 +374,9 @@ def forSyntax : (kind : SyntaxNodeKind) → Json →
         for elem in bodyElems do
           let elemStx ← getCode elem `doElem
           bodyStxArray := appendDoElems bodyStxArray elemStx
-        `(doElem| for $targetIdent:ident in $iterCode do
+        -- Parenthesize the iterable so its last token never glues to the `do` keyword
+        -- (e.g. an iterable ending in `none` would otherwise pretty-print as `nonedo`).
+        `(doElem| for $targetIdent:ident in ($iterCode) do
             $[$bodyStxArray:doElem]*)
     | `command, json => do
         match blockMutatedNames? json with

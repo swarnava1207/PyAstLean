@@ -29,6 +29,10 @@ def pythonBuiltinMap? (name : String) : Option Lean.Name :=
   -- registry entries make them usable as first-class callables, e.g. `map(int, xs)`.
   | "int" => some ``pyInt
   | "str" => some ``pyStr
+  | "float" => some ``pyFloat
+  -- We have no real tuple-from-iterable runtime; `tuple(xs)` is treated as a list, which is
+  -- adequate for the membership/comparison/iteration uses that appear in this subset.
+  | "tuple" => some ``pyList
   -- `map`/`filter`/`list` also have dedicated special-case lowering for direct calls (which
   -- wins, being matched first). The registry entries are the fallback used when the call is
   -- IO-effectful and routed through `inlineIOTerm`, e.g. `map(int, input().split())`.
