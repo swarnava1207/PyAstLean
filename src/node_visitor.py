@@ -10,6 +10,7 @@ BINOP_MAP = {
     ast.Mult: "mul",
     ast.Pow: "pow",
     ast.Div: "div",
+    ast.FloorDiv: "floordiv",
     ast.BitOr: "bitor",
     ast.Mod : "mod",
 }

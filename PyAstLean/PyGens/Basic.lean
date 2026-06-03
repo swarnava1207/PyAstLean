@@ -202,6 +202,9 @@ def binOpSyntax : (kind : SyntaxNodeKind) → Json →
     | "sub" => `($leftCode -ₚ $rightCode)
     | "mul" => `($leftCode *ₚ $rightCode)
     | "div" => `($leftCode /ₚ $rightCode)
+    | "floordiv" =>
+        let floorDivIdent := mkIdent ``PyAstLean.pyFloorDiv
+        `($floorDivIdent $leftCode $rightCode)
     | "pow" => `($leftCode ^ₚ $rightCode)
     | "mod" => `($leftCode %ₚ $rightCode)
     | _ => throwError s!"Unsupported binary operator: {op}"
