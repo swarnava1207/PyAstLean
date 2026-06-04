@@ -514,6 +514,29 @@ def annotate_library_imports(module_json):
         _annotate_library_imports_in_scope(module_json.get("body", []))
 
 
+def _sanitize_hole_identifiers(ast_tree):
+    """Rename Python variables whose name is a single underscore when they are *read*.
+
+    Python allows `_` as an ordinary identifier (e.g. `for _ in xs: a = int(_)`), but Lean
+    treats a bare `_` as a placeholder/hole, so a read of it elaborates to a metavariable
+    rather than the bound value. When `_` is only ever a throwaway binder (`for _ in range(n)`,
+    `fun _ => ...`) emitting `_` is correct and idiomatic, so we leave those alone and only
+    rewrite when `_` actually appears in a load position somewhere in the module.
+    """
+    reads_underscore = any(
+        isinstance(n, ast.Name) and n.id == "_" and isinstance(n.ctx, ast.Load)
+        for n in ast.walk(ast_tree)
+    )
+    if not reads_underscore:
+        return
+    safe = "__py_us"
+    for n in ast.walk(ast_tree):
+        if isinstance(n, ast.Name) and n.id == "_":
+            n.id = safe
+        elif isinstance(n, ast.arg) and n.arg == "_":
+            n.arg = safe
+
+
 def translate_to_json(source_code, filepath=None):
     """
     Parses Python source code and translates it to a JSON IR.
@@ -535,6 +558,7 @@ def translate_to_json(source_code, filepath=None):
 
     logger.debug("Source passed to Python AST parser:\n%s", source_code)
     ast_tree = ast.parse(source_code)
+    _sanitize_hole_identifiers(ast_tree)
     logger.debug("Parsed Python AST:\n%s", ast.dump(ast_tree, indent=4))
     translator = ASTToJsonLeanVisitor(source_code)
     data = translator.visit(ast_tree)

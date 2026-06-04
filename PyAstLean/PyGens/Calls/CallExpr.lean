@@ -181,6 +181,14 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
         if attr == "sort" then
           throwError "sort() is only supported as a statement; use sorted(x) in expressions."
 
+        -- `pop` both returns a value and mutates its receiver, which a pure term cannot express.
+        -- Refuse it in expression position so the pure-function path falls back to the monadic
+        -- lowering, where `x = container.pop(...)` is handled as a statement (value bind +
+        -- container update). `pop` in any other expression position stays a clear error.
+        if attr == "pop" then
+          throwError "pop() returns a value *and* mutates its receiver; it is only supported as \
+            a direct assignment `x = container.pop(...)`, not as a sub-expression."
+
         let valCode ← getCode valueJson `term
         allArgs := allArgs.push valCode
         allArgJsons := allArgJsons.push valueJson

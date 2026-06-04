@@ -45,6 +45,26 @@ def pyProtocolListPop (xs : List α) (idx : Int) (default : Option α := none) :
 instance : PyPop (List α) Int α where
   pyPop xs idx default := pyProtocolListPop xs idx default
 
+/-! Python `pop` removes an element *and* returns it. Since the runtime containers are
+immutable values, codegen splits this into two independent reads of the original container:
+`pyPopValue` (the returned element) and `pyPopRest` (the container with that element removed).
+The index defaults to `-1` (the last element), matching `list.pop()`; `set.pop()` removes an
+arbitrary element, and "the last" is an acceptable arbitrary choice for the list-backed set. -/
+
+/-- Normalize a possibly-negative `pop` index against a length; out-of-range stays out of range. -/
+private def pyPopIndex (len : Nat) (idx : Int) : Int :=
+  if idx < 0 then (len : Int) + idx else idx
+
+/-- The element `pop(idx)` returns (defaulting to the last). Out-of-range yields `default`. -/
+def pyPopValue [Inhabited α] (xs : List α) (idx : Int := -1) : α :=
+  let i := pyPopIndex xs.length idx
+  if 0 ≤ i ∧ i < xs.length then xs[i.toNat]! else default
+
+/-- The container after `pop(idx)` removes its element (defaulting to the last). -/
+def pyPopRest (xs : List α) (idx : Int := -1) : List α :=
+  let i := pyPopIndex xs.length idx
+  if 0 ≤ i ∧ i < xs.length then xs.eraseIdx i.toNat else xs
+
 /-- Instance for popping from a HashMap. -/
 instance [BEq α] [Hashable α] : PyPop (Std.HashMap α β) α β where
   pyPop m key default := pyDictPop m key default

@@ -1,5 +1,6 @@
 import PyAstLean.PyGens.Core.Utils
 import PyAstLean.PyGens.Calls.CallEffects
+import PyAstLean.PyGens.Calls.CallShared
 
 open Lean Meta Elab Term Qq Std
 
@@ -190,6 +191,14 @@ def assignSyntax : (kind : SyntaxNodeKind) → Json →
             -- statements. Consumers flatten via `appendDoElems`.
             pure ⟨mkNullNode (binds.map TSyntax.raw)⟩
         | none => do
+            -- Some RHS calls both mutate their receiver and yield a value (e.g. `x.pop()`), which a
+            -- pure term cannot express. The Calls layer lowers these to a value term plus a
+            -- container-update statement, both reading the original container; assignment binds the
+            -- target to the value first, then applies the update.
+            if jsonNodeType? target == some "Name" then
+              if let some (valueTerm, update) ← mutatingCallRhsLowering? value then
+                let bindTarget ← bindOrAssignLocal (← getCode target `ident) valueTerm
+                return ⟨mkNullNode #[bindTarget.raw, update.raw]⟩
             let rhs ←
               if jsonUsesIOEffect value then
                 inlineIOTerm value
@@ -260,15 +269,19 @@ def returnSyntax : (kind : SyntaxNodeKind) → Json →
               else
                 let s ← getCode value `term
                 if jsonUsesMonadicEffect value then `((← $s:term)) else pure s
-            -- Bind the return value to a temporary, then `return` the temporary. A wide
-            -- expression placed directly after `return` can be split onto the next line by the
-            -- pretty-printer, which re-parses as `return` (Unit) followed by a stray term
-            -- ("must be last element in a `do` sequence"). A `let` binding wraps safely, and
-            -- `return <ident>` is always narrow enough to stay on one line.
-            let retIdent := mkIdent (← freshName `__py_ret)
-            let bind ← `(doElem| let $retIdent:ident := $valueStx)
-            let ret ← `(doElem| return $retIdent)
-            pure ⟨mkNullNode #[bind.raw, ret.raw]⟩
+            -- A simple atom (`return x` / `return 42`) is always narrow, so return it directly.
+            -- A wide expression placed directly after `return`, however, can be split onto the
+            -- next line by the pretty-printer, which re-parses as `return` (Unit) followed by a
+            -- stray term ("must be last element in a `do` sequence"). For those we bind the value
+            -- to a temporary first and `return <ident>`, which always stays on one line.
+            match jsonNodeType? value with
+            | some "Name" | some "Constant" =>
+                `(doElem| return $valueStx)
+            | _ =>
+                let retIdent := mkIdent (← freshName `__py_ret)
+                let bind ← `(doElem| let $retIdent:ident := $valueStx)
+                let ret ← `(doElem| return $retIdent)
+                pure ⟨mkNullNode #[bind.raw, ret.raw]⟩
     | _, _ => throwError s!"Unsupported syntax category for Return node"
 
 end PyAstLean

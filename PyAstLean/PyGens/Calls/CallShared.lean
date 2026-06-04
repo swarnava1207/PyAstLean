@@ -1,6 +1,7 @@
 import Mathlib
 import PyAstLean.Codegen
 import PyAstLean.PyGens.Basic
+import PyAstLean.PyGens.Core.Utils
 
 open Lean Meta Elab Term Qq Std
 
@@ -85,5 +86,43 @@ def typedBinaryLambdaCode (funcJson : Json) (fallback : TSyntax `term)
     | some stx => pure stx
     | none => `(_)
   `(fun ($arg0 : $paramTy) ↦ fun ($arg1 : $paramTy) ↦ $bodyStx)
+
+/-- Recognize a `container.pop(...)` call whose receiver is a `Name` already in scope as a
+mutable variable. Returns the container ident and the optional index argument term (`none` for
+the no-argument `pop()`). A freshly-seen receiver is not a mutation site, so it returns `none`. -/
+def popCallParts? (value : Json) : PygenM (Option (TSyntax `ident × Option (TSyntax `term))) := do
+  unless jsonNodeType? value == some "Call" do return none
+  let .ok funcJson := value.getObjVal? "func" | return none
+  unless jsonNodeType? funcJson == some "Attribute" do return none
+  unless funcJson.getObjValAs? String "attr" == .ok "pop" do return none
+  let .ok receiverJson := funcJson.getObjVal? "value" | return none
+  unless jsonNodeType? receiverJson == some "Name" do return none
+  let receiverIdent ← getCode receiverJson `ident
+  unless (← hasVar receiverIdent.getId) do return none
+  let args := (value.getObjValAs? (Array Json) "args").toOption.getD #[]
+  match args.size with
+  | 0 => return some (receiverIdent, none)
+  | 1 => return some (receiverIdent, some (← getCode args[0]! `term))
+  | _ => return none
+
+/-- Lower a call that both mutates its receiver and yields a value into a `(value, update)`
+pair: `value` is the term the call returns, and `update` is the statement that applies the
+mutation. The two are written so they each read the *original* container, so the caller must
+bind `value` first and then run `update` (binding the result does not touch the container).
+
+Currently this covers `container.pop(idx?)`: the value is the popped element (`pyPopValue`) and
+the update reassigns the container to itself with that element removed (`pyPopRest`). -/
+def mutatingCallRhsLowering? (value : Json) :
+    PygenM (Option (TSyntax `term × TSyntax `doElem)) := do
+  match ← popCallParts? value with
+  | none => return none
+  | some (receiverIdent, index?) =>
+      let valueTerm ← match index? with
+        | none => `($(mkIdent ``PyAstLean.pyPopValue) $receiverIdent)
+        | some idx => `($(mkIdent ``PyAstLean.pyPopValue) $receiverIdent $idx)
+      let update ← match index? with
+        | none => `(doElem| $receiverIdent:ident := $(mkIdent ``PyAstLean.pyPopRest) $receiverIdent)
+        | some idx => `(doElem| $receiverIdent:ident := $(mkIdent ``PyAstLean.pyPopRest) $receiverIdent $idx)
+      return some (valueTerm, update)
 
 end PyAstLean
