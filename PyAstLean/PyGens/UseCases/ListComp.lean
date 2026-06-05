@@ -121,6 +121,40 @@ def generatorExpSyntax : (kind : SyntaxNodeKind) → Json →
   | `term, json => listCompSyntax `term json
   | _, _ => throwError s!"Unsupported syntax category for GeneratorExp node"
 
+@[pygen "SetComp"]
+def setCompSyntax : (kind : SyntaxNodeKind) → Json →
+    PygenM (TSyntax kind)
+  | `term, json => do
+      -- A set comprehension lowers exactly like a list comprehension, then the resulting list is
+      -- deduplicated into the (list-backed) set runtime, matching `{f(x) for x in …}`.
+      let .ok eltJson := json.getObjValAs? Json "elt" | throwError
+        s!"SetComp node does not have an 'elt' field: {json}"
+      let .ok generatorsJson := json.getObjValAs? (Array Json) "generators" | throwError
+        s!"SetComp node does not have a 'generators' field: {json}"
+      let listCode ← lowerComprehensionClauses eltJson generatorsJson.toList
+      `($(mkIdent ``PyAstLean.pySetFromList) $listCode)
+  | _, _ => throwError s!"Unsupported syntax category for SetComp node"
+
+@[pygen "DictComp"]
+def dictCompSyntax : (kind : SyntaxNodeKind) → Json →
+    PygenM (TSyntax kind)
+  | `term, json => do
+      -- A dict comprehension `{k: v for x in …}` lowers like a list comprehension whose element
+      -- is the pair `(k, v)`, producing a `List (κ × ν)`, then builds a hash map from the pairs
+      -- (later keys overwrite earlier ones, matching Python).
+      let .ok keyJson := json.getObjValAs? Json "key" | throwError
+        s!"DictComp node does not have a 'key' field: {json}"
+      let .ok valueJson := json.getObjValAs? Json "value" | throwError
+        s!"DictComp node does not have a 'value' field: {json}"
+      let .ok generatorsJson := json.getObjValAs? (Array Json) "generators" | throwError
+        s!"DictComp node does not have a 'generators' field: {json}"
+      -- Synthesize a `(key, value)` tuple element and reuse the list-comprehension lowering.
+      let pairElt := Json.mkObj [("node_type", Json.str "Tuple"),
+        ("elts", Json.arr #[keyJson, valueJson])]
+      let pairsCode ← lowerComprehensionClauses pairElt generatorsJson.toList
+      `($(mkIdent ``Std.HashMap.ofList) $pairsCode)
+  | _, _ => throwError s!"Unsupported syntax category for DictComp node"
+
 @[pygen "Range"]
 def rangeSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)

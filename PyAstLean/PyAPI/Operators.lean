@@ -201,13 +201,24 @@ operands are taken through `Int.toNat`, so a negative operand is treated as `0`.
 -/
 
 /-- Python `a & b`. -/
-def pyBitAnd (a b : Int) : Int := Int.ofNat (Nat.land a.toNat b.toNat)
+-- `&`, `|`, `^` are bitwise on integers *and* the binary set operations (intersection, union,
+-- symmetric difference) on Python sets. They are typeclasses (Int instances here; the
+-- list-backed set instances live in `Sets.lean`) so codegen emits one stable name per operator
+-- and the operand type selects the meaning.
+class PyBitAnd (α β : Type) (γ : outParam Type) where bitAnd : α → β → γ
+class PyBitOr (α β : Type) (γ : outParam Type) where bitOr : α → β → γ
+class PyBitXor (α β : Type) (γ : outParam Type) where bitXor : α → β → γ
 
-/-- Python `a | b`. -/
-def pyBitOr (a b : Int) : Int := Int.ofNat (Nat.lor a.toNat b.toNat)
+/-- Python `a & b` (integer bitwise-and, or set intersection). -/
+def pyBitAnd {α β γ : Type} [PyBitAnd α β γ] (a : α) (b : β) : γ := PyBitAnd.bitAnd a b
+/-- Python `a | b` (integer bitwise-or, or set union). -/
+def pyBitOr {α β γ : Type} [PyBitOr α β γ] (a : α) (b : β) : γ := PyBitOr.bitOr a b
+/-- Python `a ^ b` (integer bitwise-xor, or set symmetric difference). -/
+def pyBitXor {α β γ : Type} [PyBitXor α β γ] (a : α) (b : β) : γ := PyBitXor.bitXor a b
 
-/-- Python `a ^ b` (bitwise xor). -/
-def pyBitXor (a b : Int) : Int := Int.ofNat (Nat.xor a.toNat b.toNat)
+instance : PyBitAnd Int Int Int where bitAnd a b := Int.ofNat (Nat.land a.toNat b.toNat)
+instance : PyBitOr Int Int Int where bitOr a b := Int.ofNat (Nat.lor a.toNat b.toNat)
+instance : PyBitXor Int Int Int where bitXor a b := Int.ofNat (Nat.xor a.toNat b.toNat)
 
 /-- Python `a << b`. -/
 def pyShiftLeft (a b : Int) : Int := a * (2 ^ b.toNat)

@@ -305,6 +305,10 @@ class Lean4Annotator(cst.CSTTransformer):
         """
         if not isinstance(value, cst.Call) or not isinstance(value.func, cst.Name):
             return False
+        # Builtins that return a fixed-size tuple (a heterogeneous `Prod`), so `a, b = f(...)`
+        # must keep native Prod-projection unpacking rather than list-subscript splitting.
+        if value.func.value == "divmod":
+            return True
         fn_data = self.stub_annotations.get("functions", {}).get(value.func.value)
         if not fn_data:
             return False
@@ -446,6 +450,21 @@ class Lean4Annotator(cst.CSTTransformer):
             return updated_node
 
         stmt: cst.BaseSmallStatement = updated_node.body[0]
+        # Chained assignment `a = b = … = value`: Python evaluates `value` once, then binds it to
+        # each target left to right. Expand into `__tmp = value; a = __tmp; b = __tmp; …` so the
+        # single-target backend handles each, and a side-effecting `value` runs exactly once.
+        if isinstance(stmt, cst.Assign) and len(stmt.targets) >= 2:
+            self.unpack_counter += 1
+            tmp_name = f"__py_multi{self.unpack_counter}"
+            new_lines: list[cst.BaseStatement] = [
+                cst.SimpleStatementLine(body=[cst.Assign(
+                    targets=[cst.AssignTarget(target=cst.Name(tmp_name))], value=stmt.value)])
+            ]
+            for assign_target in stmt.targets:
+                new_lines.append(cst.SimpleStatementLine(body=[cst.Assign(
+                    targets=[cst.AssignTarget(target=assign_target.target)],
+                    value=cst.Name(tmp_name))]))
+            return cst.FlattenSentinel(new_lines)
         if isinstance(stmt, cst.Assign) and len(stmt.targets) == 1:
             target: cst.BaseAssignTargetExpression = stmt.targets[0].target
             if isinstance(target, cst.Name):

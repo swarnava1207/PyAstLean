@@ -293,10 +293,15 @@ def compareApplyTerm (op : String) (leftJson : Json) (leftCode rightCode : TSynt
   | "ne" => `($leftCode != $rightCode)
   | "is" => `($leftCode == $rightCode)
   | "isnot" => `($leftCode != $rightCode)
-  | "lt" => `($leftCode < $rightCode)
-  | "le" => `($leftCode <= $rightCode)
-  | "gt" => `($leftCode > $rightCode)
-  | "ge" => `($leftCode >= $rightCode)
+  -- Order comparisons go through `decide` so the result is a `Bool`, matching Python (where a
+  -- comparison is a usable `bool` value). Lean's `<`/`>`/… are `Prop`-valued, which only works
+  -- where the surrounding context forces `Bool` (an `if` condition); as a plain value — a list
+  -- comprehension element `[x > 0 for …]`, a `sum`/`any`/`all` generator, `a < b and c < d` —
+  -- the `Prop` would have no `Bool`/`PyBool` instance. (`==`/`!=`/`is` are already `Bool`.)
+  | "lt" => `(decide ($leftCode < $rightCode))
+  | "le" => `(decide ($leftCode <= $rightCode))
+  | "gt" => `(decide ($leftCode > $rightCode))
+  | "ge" => `(decide ($leftCode >= $rightCode))
   | "in" =>
       if isStringyJson leftJson then
         `($(mkIdent ``PyAstLean.pyStrContainsSubstr) $rightCode $leftCode)

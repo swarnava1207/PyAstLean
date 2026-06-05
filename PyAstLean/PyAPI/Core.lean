@@ -65,6 +65,35 @@ def pyListSlice {α : Type} (xs : List α) (start : Option Int) (stop : Option I
     | none => len
   xs.take stop |> List.drop start
 
+/-- Full Python list slicing `xs[start:stop:step]`, including a negative `step` (e.g. `xs[::-1]`
+reverses; `xs[::2]` takes every other element). Implements CPython's index clamping: with a
+positive step the bounds clamp into `[0, len]`, with a negative step into `[-1, len-1]`, then it
+walks `start, start+step, …` while still on the correct side of `stop`. A `step` of `0` (a Python
+`ValueError`) yields `[]`. -/
+def pyListSliceStep {α : Type} (xs : List α) (start stop step : Option Int) : List α :=
+  let len : Int := xs.length
+  let s : Int := step.getD 1
+  if s == 0 then []
+  else
+    let arr := xs.toArray
+    let clampPos (i : Int) : Int := if i < 0 then max 0 (len + i) else min i len
+    let clampNeg (i : Int) : Int := if i < 0 then max (-1) (len + i) else min i (len - 1)
+    let lo : Int := if s > 0 then (match start with | none => 0 | some i => clampPos i)
+                    else (match start with | none => len - 1 | some i => clampNeg i)
+    let hi : Int := if s > 0 then (match stop with | none => len | some i => clampPos i)
+                    else (match stop with | none => -1 | some i => clampNeg i)
+    let rec go (idx : Int) (fuel : Nat) (acc : List α) : List α :=
+      match fuel with
+      | 0 => acc.reverse
+      | fuel + 1 =>
+        let onSide := if s > 0 then idx < hi else idx > hi
+        if onSide && idx ≥ 0 && idx < len then
+          match arr[idx.toNat]? with
+          | some x => go (idx + s) fuel (x :: acc)
+          | none => acc.reverse
+        else acc.reverse
+    go lo (xs.length + 1) []
+
 /-- Python-style indexing/slicing for strings. -/
 def pyStringGetItem (s : String) (idx : Int) : Option Char :=
   let lst := s.toList
@@ -94,22 +123,25 @@ def pyStringSlice (s : String) (start : Option Int) (stop : Option Int) : String
   let sliced := pyListSlice lst start stop
   String.ofList sliced
 
-/-- Python slicing `c[lo:hi]` over the types that support it. Both lists and strings slice, and
-codegen cannot tell which a value is (e.g. `a[1:]` where `a` is a parameter), so it targets the
-single name `pySlice` and the instance is chosen by the value's type — a `String` slices to a
-`String`, a `List` to a `List`. Without this, list slices were mis-lowered to the String-only
-`pyStringSlice`, forcing list values to `String`. -/
-class PySlice (α : Type) where
-  slice : α → Option Int → Option Int → α
+/-- Full Python string slicing `s[start:stop:step]` (negative step reverses, etc.). -/
+def pyStringSliceStep (s : String) (start stop step : Option Int) : String :=
+  String.ofList (pyListSliceStep s.toList start stop step)
 
-/-- Dispatch Python slicing `c[lo:hi]` through the `PySlice` typeclass. -/
-def pySlice {α : Type} [PySlice α] (c : α) (lo hi : Option Int) : α :=
-  PySlice.slice c lo hi
+/-- Python slicing `c[lo:hi:step]` over the types that support it. Both lists and strings slice,
+and codegen cannot tell which a value is (e.g. `a[1:]` where `a` is a parameter), so it targets
+the single name `pySlice` and the instance is chosen by the value's type — a `String` slices to a
+`String`, a `List` to a `List`. The `step` is carried so `a[::-1]`/`a[::2]` work. -/
+class PySlice (α : Type) where
+  slice : α → Option Int → Option Int → Option Int → α
+
+/-- Dispatch Python slicing `c[lo:hi:step]` through the `PySlice` typeclass. -/
+def pySlice {α : Type} [PySlice α] (c : α) (lo hi step : Option Int) : α :=
+  PySlice.slice c lo hi step
 
 instance {β : Type} : PySlice (List β) where
-  slice xs lo hi := pyListSlice xs lo hi
+  slice xs lo hi step := pyListSliceStep xs lo hi step
 
 instance : PySlice String where
-  slice s lo hi := pyStringSlice s lo hi
+  slice s lo hi step := pyStringSliceStep s lo hi step
 
 end PyAstLean

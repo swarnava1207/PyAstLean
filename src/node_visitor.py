@@ -827,6 +827,25 @@ class ASTToJsonLeanVisitorBase:
             "elt": self.visit(node.elt),
             "generators": [self.visit(gen) for gen in node.generators]
         }
+
+    def visit_SetComp(self, node):
+        """Translates ast.SetComp (set comprehensions) — same IR shape as a list comprehension;
+        the backend lowers the produced list and deduplicates it into the set runtime."""
+        return {
+            "node_type": "SetComp",
+            "elt": self.visit(node.elt),
+            "generators": [self.visit(gen) for gen in node.generators]
+        }
+
+    def visit_DictComp(self, node):
+        """Translates ast.DictComp (dict comprehensions). Like a comprehension but with a
+        key/value pair per element; the backend builds a hash map from the produced pairs."""
+        return {
+            "node_type": "DictComp",
+            "key": self.visit(node.key),
+            "value": self.visit(node.value),
+            "generators": [self.visit(gen) for gen in node.generators]
+        }
     
     def visit_comprehension(self, node):
         """Translates ast.comprehension (the generator part of comprehensions) to a JSON IR node."""

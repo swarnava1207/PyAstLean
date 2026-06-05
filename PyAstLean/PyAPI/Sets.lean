@@ -1,5 +1,6 @@
 import Mathlib
 import PyAstLean.PyAPI.CommonProtocols.Iterable
+import PyAstLean.PyAPI.Operators
 
 namespace PyAstLean
 
@@ -35,5 +36,34 @@ def pySetDiscard {α : Type} [BEq α] (s : List α) (x : α) : List α :=
 /-- Python `s.remove(x)`: like `discard` here (we do not raise `KeyError` on absence). -/
 def pySetRemove {α : Type} [BEq α] (s : List α) (x : α) : List α :=
   pySetDiscard s x
+
+/-! ### Binary set operations (`|`, `&`, `-`, `^`)
+
+Sets are deduplicated lists, so these operate elementwise and keep the result deduplicated. Each
+takes two already-deduplicated sets and returns a deduplicated set. -/
+
+/-- Python set union `a | b`: elements in either set. -/
+def pySetUnion {α : Type} [BEq α] (a b : List α) : List α :=
+  b.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) a
+
+/-- Python set intersection `a & b`: elements in both sets. -/
+def pySetIntersection {α : Type} [BEq α] (a b : List α) : List α :=
+  a.filter (fun x => b.contains x)
+
+/-- Python set difference `a - b`: elements of `a` not in `b`. -/
+def pySetDifference {α : Type} [BEq α] (a b : List α) : List α :=
+  a.filter (fun x => !b.contains x)
+
+/-- Python symmetric difference `a ^ b`: elements in exactly one of the two sets. -/
+def pySetSymmetricDifference {α : Type} [BEq α] (a b : List α) : List α :=
+  (a.filter (fun x => !b.contains x)) ++ (b.filter (fun x => !a.contains x))
+
+/-! The binary set operators reuse the same surface names as the integer bitwise operators
+(`&`, `|`, `^`) and Python subtraction (`-`), so a set expression `a & b` lowers identically to
+codegen and the list-backed instance is selected by type. -/
+instance {α : Type} [BEq α] : PyBitAnd (List α) (List α) (List α) where bitAnd := pySetIntersection
+instance {α : Type} [BEq α] : PyBitOr (List α) (List α) (List α) where bitOr := pySetUnion
+instance {α : Type} [BEq α] : PyBitXor (List α) (List α) (List α) where bitXor := pySetSymmetricDifference
+instance {α : Type} [BEq α] : PyHSub (List α) (List α) (List α) where hSub := pySetDifference
 
 end PyAstLean

@@ -109,6 +109,23 @@ def joinedStrSyntax : (kind : SyntaxNodeKind) → Json →
         $effectTy))
   | _, _ => throwError s!"Unsupported syntax category for JoinedStr node"
 
+/-- Fold a binary runtime function `fn` over `args` (length ≥ 2), associating per `dir`. A right
+fold builds `fn a₁ (fn a₂ (… (fn aₙ₋₁ aₙ)))`; a left fold builds `fn (… (fn a₁ a₂) …) aₙ`. Drives
+the variadic-builtin lowering (e.g. `zip`) from `variadicFoldBuiltin?`. -/
+def foldBinaryOverArgs (fn : TSyntax `term) (dir : BuiltinFoldDir) (args : Array (TSyntax `term)) :
+    PygenM (TSyntax `term) := do
+  match dir with
+  | .right =>
+      let mut acc := args[args.size - 1]!
+      for i in (List.range (args.size - 1)).reverse do
+        acc ← `($fn $(args[i]!) $acc)
+      pure acc
+  | .left =>
+      let mut acc := args[0]!
+      for i in [1:args.size] do
+        acc ← `($fn $acc $(args[i]!))
+      pure acc
+
 /-- Map a bare Python builtin function name to the Lean runtime symbol when it is used as a value. -/
 def mappedCallableValueCode (json : Json) : PygenM (TSyntax `term) := do
   match ← jsonLibraryMappedName? json with
@@ -124,6 +141,29 @@ def mappedCallableValueCode (json : Json) : PygenM (TSyntax `term) := do
               pure (mkIdent mappedName : TSyntax `term)
       | _, _ =>
           getCode json `term
+
+/-- Lower `min(...)` / `max(...)` (`which` is `"min"` or `"max"`). Handles a single iterable
+(`min(xs)`), several positionals gathered into a list (`min(a, b, c)`), and the optional
+`key=f` keyword (→ `pyMinBy`/`pyMaxBy`). -/
+def lowerMinMaxCall (which : String) (argsArray : Array Json) (argsCodes : Array (TSyntax `term))
+    (keyWordsMap : PyKeywordArgs) : PygenM (TSyntax `term) := do
+  for (kwName, _) in keyWordsMap.toList do
+    unless kwName == "key" do
+      throwError s!"{which}() keyword argument '{kwName}' is not supported yet."
+  unless argsArray.size ≥ 1 do
+    throwError s!"{which}() expects at least one argument."
+  let keyOpt := keyWordsMap.get? "key"
+  buildIOPureApplicationFromArgs argsArray argsCodes fun resolvedArgs => do
+    let iterable ← if resolvedArgs.size == 1 then pure resolvedArgs[0]!
+      else `([$resolvedArgs,*])
+    match keyOpt with
+    | none =>
+        let fn := mkIdent (if which == "min" then ``pyMin else ``pyMax)
+        `($fn $iterable)
+    | some kJson =>
+        let keyCode ← mappedCallableValueCode kJson
+        let fn := mkIdent (if which == "min" then ``pyMinBy else ``pyMaxBy)
+        `($fn $keyCode $iterable)
 
 @[pygen "Call"]
 def callSyntax : (kind : SyntaxNodeKind) → Json →
@@ -320,7 +360,32 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
                 let pySortByIdent := mkIdent ``pySortBy
                 return ← buildIOPureApplicationFromArgs argsArray argsCodes fun resolvedArgs => do
                   `($pySortByIdent $keyCode $revCode $(resolvedArgs[0]!))
+        | .ok "Name", .ok "round" => do
+            -- `round(x)` returns an `int` (banker's rounding); `round(x, n)` returns a `float`.
+            unless keyWordsMap.isEmpty do
+              throwError "round() keyword arguments are not supported yet."
+            match argsArray.size with
+            | 1 =>
+                return ← buildIOPureApplicationFromArgs argsArray argsCodes fun r => do
+                  `($(mkIdent ``pyRound) $(r[0]!))
+            | 2 =>
+                return ← buildIOPureApplicationFromArgs argsArray argsCodes fun r => do
+                  `($(mkIdent ``pyRoundDigits) $(r[0]!) $(r[1]!))
+            | _ => throwError "round() expects one or two arguments."
+        | .ok "Name", .ok "min" => return ← lowerMinMaxCall "min" argsArray argsCodes keyWordsMap
+        | .ok "Name", .ok "max" => return ← lowerMinMaxCall "max" argsArray argsCodes keyWordsMap
         | .ok "Name", .ok funcName =>
+            -- Variadic builtins that fold a binary runtime function over their args (e.g. `zip`)
+            -- are handled generically from the `variadicFoldBuiltin?` registry — one handler for
+            -- all of them, so a new such builtin is a registry row, not a branch here.
+            if let some (foldFn, dir) := variadicFoldBuiltin? funcName then
+              unless keyWordsMap.isEmpty do
+                throwError s!"{funcName}() keyword arguments are not supported yet."
+              unless argsArray.size ≥ 2 do
+                throwError s!"{funcName}() expects at least two arguments."
+              let foldIdent := mkIdent foldFn
+              return ← buildIOPureApplicationFromArgs argsArray argsCodes fun resolvedArgs => do
+                foldBinaryOverArgs foldIdent dir resolvedArgs
             match pythonBuiltinMap? funcName with
             | some mappedName => funcIdent := (mkIdent mappedName : TSyntax `term)
             | none =>

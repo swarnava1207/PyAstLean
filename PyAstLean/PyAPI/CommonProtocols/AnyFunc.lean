@@ -17,3 +17,18 @@ def pyAny {α : Type} [PyAny α] (x : α) : Bool :=
 instance {α β : Type} [PyIterable α β] [PyBool β] : PyAny α where
   pyAny x :=
     (pyIter x).any pyBool
+
+/-
+The `PyAll` protocol is Python's `all` function: `True` iff every element is truthy
+(an empty iterable is `True`).
+-/
+
+class PyAll (α : Type) where
+  pyAll : α → Bool
+
+def pyAll {α : Type} [PyAll α] (x : α) : Bool :=
+  PyAll.pyAll x
+
+instance {α β : Type} [PyIterable α β] [PyBool β] : PyAll α where
+  pyAll x :=
+    (pyIter x).all pyBool

@@ -26,36 +26,31 @@ def subscriptTermFromValue (valueJson sliceJson : Json) (valueCode : TSyntax `te
 
     let sliceType := sliceJson.getObjValAs? String "node_type"
     if sliceType == .ok "Slice" then
-        let parseBound (j : Json) : Option Int :=
-            match j.getObjValAs? Json "node_type" with
-            | .ok "Constant" =>
-                match j.getObjValAs? Int "value" with
-                | .ok i => some i
-                | _ => none
-            | .ok "UnaryOp" =>
-                match j.getObjValAs? String "op", j.getObjValAs? Json "operand" with
-                | .ok "neg", .ok operand =>
-                    match operand.getObjValAs? Int "value" with
-                    | .ok i => some (-i)
-                    | _ => none
-                | _, _ => none
-            | _ => none
-
-        let lowerOpt := (sliceJson.getObjVal? "lower").toOption.bind parseBound
-        let upperOpt := (sliceJson.getObjVal? "upper").toOption.bind parseBound
-            
-        -- Generic slice dispatch: a `String` slices to `String`, a `List` to `List`. (A bare
-        -- string literal still uses the String slicer directly below for predictable output.)
+        -- Lower each slice bound to an `Option Int` term. A missing or `None` bound is `none`;
+        -- any other bound expression (constant, variable, arithmetic) is lowered through `getCode`
+        -- and wrapped in `some`, so `a[i:j]`, `a[n-1::-1]`, etc. all carry the real bound rather
+        -- than being silently dropped to a full slice.
+        let boundStx (field : String) : PygenM (TSyntax `term) := do
+            match (sliceJson.getObjVal? field).toOption with
+            | none => `(none)
+            | some j =>
+                if j.getObjValAs? String "node_type" == .ok "Constant"
+                    && (j.getObjVal? "value").toOption.any (· == Json.null) then
+                  `(none)
+                else
+                  match j with
+                  | .null => `(none)
+                  | _ => `(some $(← getCode j `term))
+        let startStx ← boundStx "lower"
+        let stopStx ← boundStx "upper"
+        let stepStx ← boundStx "step"
+        -- Generic slice dispatch: a `String` slices to `String`, a `List` to `List`; the `step`
+        -- bound makes `a[::-1]`/`a[::2]` correct. (A bare string literal uses the String slicer
+        -- directly for predictable output.)
         let sliceIdent :=
-          if isString then mkIdent `PyAstLean.pyStringSlice
+          if isString then mkIdent `PyAstLean.pyStringSliceStep
           else mkIdent `PyAstLean.pySlice
-        let startStx ← match lowerOpt with
-            | some i => let iStx ← intToStx i; `(some $iStx)
-            | none => `(none)
-        let stopStx ← match upperOpt with
-            | some i => let iStx ← intToStx i; `(some $iStx)
-            | none => `(none)
-        `($sliceIdent $valueCode $startStx $stopStx)
+        `($sliceIdent $valueCode $startStx $stopStx $stepStx)
     else if isTuple then
         match sliceJson.getObjValAs? String "node_type", sliceJson.getObjValAs? Json "value" with
         | .ok "Constant", .ok (.num (JsonNumber.mk 0 0)) =>

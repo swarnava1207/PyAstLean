@@ -21,6 +21,9 @@ def pythonBuiltinMap? (name : String) : Option Lean.Name :=
   | "max" => some ``pyMax
   | "bool" => some ``pyBool
   | "any" => some ``pyAny
+  | "all" => some ``pyAll
+  | "abs" => some ``pyAbs
+  | "divmod" => some ``pyDivmod
   | "reversed" => some ``pyReversed
   | "chr" => some ``pyChr
   | "ord" => some ``pyOrd
@@ -44,6 +47,27 @@ def pythonBuiltinMap? (name : String) : Option Lean.Name :=
   | "map" => some ``pyMap
   | "filter" => some ``pyFilter
   | "list" => some ``pyList
+  | _ => none
+
+/-- Associativity for folding a binary runtime function over a variadic builtin's arguments. -/
+inductive BuiltinFoldDir where
+  | left
+  | right
+  deriving Repr, DecidableEq
+
+/--
+Registry for *variadic* builtins that lower by folding one binary runtime function over their
+(two-or-more) arguments. This is the general, data-driven home for "n-ary" builtins: a single
+generic handler in the call lowering reads this table, so adding such a builtin is one row here
+rather than a new branch in the call generator.
+
+`zip(x₁, …, xₙ)` is `pyZip x₁ (pyZip x₂ (… (pyZip xₙ₋₁ xₙ)))` — a *right* fold of the 2-way
+`pyZip`. That yields the right-nested n-tuple `(a₁, (a₂, …, aₙ))` that tuple unpacking projects
+through, and `pyZip`'s shortest-wins truncation composes to "truncate to the shortest input".
+-/
+def variadicFoldBuiltin? (name : String) : Option (Lean.Name × BuiltinFoldDir) :=
+  match name with
+  | "zip" => some (``pyZip, BuiltinFoldDir.right)
   | _ => none
 
 end PyAstLean

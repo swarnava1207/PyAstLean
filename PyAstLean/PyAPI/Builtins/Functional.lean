@@ -97,6 +97,22 @@ private def pyMaxList [Ord α] [Inhabited α] : List α → α
 def pyMax {α β : Type} [inst : PyIterable α β] [Ord β] [Inhabited β] (xs : α) : β :=
   pyMaxList (pyIter xs)
 
+/-- Python `min(iterable, key=f)`: the element whose projected key is smallest. Ties keep the
+first element (Python's `min` is stable on the leftmost minimum). -/
+def pyMinBy {α β κ : Type} [PyIterable α β] [Ord κ] [Inhabited β] (key : β → κ) (xs : α) : β :=
+  match pyIter xs with
+  | [] => panic! "ValueError: min() arg is an empty sequence"
+  | x :: rest =>
+      rest.foldl (fun best y => if compare (key y) (key best) == Ordering.lt then y else best) x
+
+/-- Python `max(iterable, key=f)`: the element whose projected key is largest (leftmost on ties,
+matching Python). -/
+def pyMaxBy {α β κ : Type} [PyIterable α β] [Ord κ] [Inhabited β] (key : β → κ) (xs : α) : β :=
+  match pyIter xs with
+  | [] => panic! "ValueError: max() arg is an empty sequence"
+  | x :: rest =>
+      rest.foldl (fun best y => if compare (key y) (key best) == Ordering.gt then y else best) x
+
 
 theorem pyMaxList_singleton [Ord α] [Inhabited α] : ∀ x : α, pyMaxList [x] = x := by
   intro x
