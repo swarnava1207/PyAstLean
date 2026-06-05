@@ -94,4 +94,22 @@ def pyStringSlice (s : String) (start : Option Int) (stop : Option Int) : String
   let sliced := pyListSlice lst start stop
   String.ofList sliced
 
+/-- Python slicing `c[lo:hi]` over the types that support it. Both lists and strings slice, and
+codegen cannot tell which a value is (e.g. `a[1:]` where `a` is a parameter), so it targets the
+single name `pySlice` and the instance is chosen by the value's type — a `String` slices to a
+`String`, a `List` to a `List`. Without this, list slices were mis-lowered to the String-only
+`pyStringSlice`, forcing list values to `String`. -/
+class PySlice (α : Type) where
+  slice : α → Option Int → Option Int → α
+
+/-- Dispatch Python slicing `c[lo:hi]` through the `PySlice` typeclass. -/
+def pySlice {α : Type} [PySlice α] (c : α) (lo hi : Option Int) : α :=
+  PySlice.slice c lo hi
+
+instance {β : Type} : PySlice (List β) where
+  slice xs lo hi := pyListSlice xs lo hi
+
+instance : PySlice String where
+  slice s lo hi := pyStringSlice s lo hi
+
 end PyAstLean

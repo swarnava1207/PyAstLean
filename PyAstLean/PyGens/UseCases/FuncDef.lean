@@ -353,7 +353,10 @@ def assignHeadSyntax : (kind : SyntaxNodeKind) → Json →
             let n := idents.size
             let valueStx ← getCode value `term
             let unpackTmpIdent := mkIdent (← freshName `__unpack_pair)
-            let isTuple := jsonNodeType? value == some "Tuple"
+            -- A `Tuple` literal or a tuple-returning function call both produce a `Prod` (use
+            -- `Prod.fst`/`Prod.snd`); list-returning RHSs are pre-split into subscripts and never
+            -- reach native unpacking (see Core/Assign.lean for the same reasoning).
+            let isTuple := jsonNodeType? value == some "Tuple" || jsonNodeType? value == some "Call"
             let mut result := tailCode
             for i in (List.range n).reverse do
               let acc ← unpackAccessTerm isTuple unpackTmpIdent i n

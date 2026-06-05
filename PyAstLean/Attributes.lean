@@ -49,7 +49,7 @@ def pythonMethodMap? (attr : String) : Option Lean.Name :=
   | "pop"        => some ``pyPop
   | "count"      => some ``pyCount
   | "find"        => some ``pyStringFind
-  | "index"      => some ``pyStringIndex
+  | "index"      => some ``pyIndex
   | _            => none
 
 /--

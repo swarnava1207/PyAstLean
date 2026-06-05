@@ -297,6 +297,23 @@ class Lean4Annotator(cst.CSTTransformer):
             ]
         )
 
+    def _call_returns_tuple(self, value: cst.BaseExpression) -> bool:
+        """True when `value` is a call to a function whose stub return type is `tuple[...]`.
+
+        Such a result is a heterogeneous `Prod` at the Lean level, so the caller must keep
+        native tuple unpacking (Prod projections) rather than expanding to list subscripts.
+        """
+        if not isinstance(value, cst.Call) or not isinstance(value.func, cst.Name):
+            return False
+        fn_data = self.stub_annotations.get("functions", {}).get(value.func.value)
+        if not fn_data:
+            return False
+        returns = fn_data.get("returns")
+        if returns is None:
+            return False
+        ret_str = node_to_str(returns)
+        return ret_str == "tuple" or ret_str.startswith("tuple[") or ret_str.startswith("Tuple[")
+
     def _split_unpack_assignment_lines(
         self,
         target: cst.Tuple | cst.List,
@@ -313,6 +330,14 @@ class Lean4Annotator(cst.CSTTransformer):
         # `Prod.fst`/`Prod.snd`, which is correct for tuples. Expanding to `tmp[i]`
         # subscripts would mis-lower as list indexing on a tuple value.
         if isinstance(value, (cst.Tuple, cst.List)) and len(value.elements) == len(names):
+            return []
+
+        # When the RHS is a call to a function that returns a `tuple[...]` (e.g. `c, a = f()`
+        # where `def f() -> tuple[int, list]`), the result is a heterogeneous `Prod`, not a
+        # `List`. Subscripting it (`tmp[0]`, `tmp[1]`) would demand `PyGetItem (α × β) Int`,
+        # which is impossible (the element type depends on the index). Leave it as native
+        # unpacking so the Lean backend lowers it through `Prod.fst`/`Prod.snd`.
+        if self._call_returns_tuple(value):
             return []
 
         self.unpack_counter += 1

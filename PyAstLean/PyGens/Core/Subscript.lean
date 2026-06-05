@@ -44,7 +44,11 @@ def subscriptTermFromValue (valueJson sliceJson : Json) (valueCode : TSyntax `te
         let lowerOpt := (sliceJson.getObjVal? "lower").toOption.bind parseBound
         let upperOpt := (sliceJson.getObjVal? "upper").toOption.bind parseBound
             
-        let sliceIdent := mkIdent `PyAstLean.pyStringSlice
+        -- Generic slice dispatch: a `String` slices to `String`, a `List` to `List`. (A bare
+        -- string literal still uses the String slicer directly below for predictable output.)
+        let sliceIdent :=
+          if isString then mkIdent `PyAstLean.pyStringSlice
+          else mkIdent `PyAstLean.pySlice
         let startStx ← match lowerOpt with
             | some i => let iStx ← intToStx i; `(some $iStx)
             | none => `(none)

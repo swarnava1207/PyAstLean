@@ -177,7 +177,11 @@ def assignSyntax : (kind : SyntaxNodeKind) → Json →
             let unpackTmpIdent := mkIdent (Name.mkSimple s!"__py_unpack_{idents.toList.map (·.getId.toString) |> String.intercalate "_"}")
             -- The unpack temporary is always private (an implementation detail).
             let cmd0 ← makeCommandPrivate (← `(command| def $unpackTmpIdent := $valueStx))
-            let isTuple := jsonNodeType? value == some "Tuple"
+            -- A literal `Tuple` RHS builds a `Prod` (use `Prod.fst`/`Prod.snd`); so does a
+            -- function call returning a `tuple[...]` (the Python pre-pass only leaves such
+            -- tuple-returning calls as native unpacking — list-returning RHSs are pre-split
+            -- into subscripts and never reach here, so a `Call` here means a `Prod` result).
+            let isTuple := jsonNodeType? value == some "Tuple" || jsonNodeType? value == some "Call"
             let mut cmds : Array (TSyntax `command) := #[cmd0]
             for i in List.range n do
               let acc ← unpackAccessTerm isTuple unpackTmpIdent i n
@@ -209,7 +213,11 @@ def assignSyntax : (kind : SyntaxNodeKind) → Json →
               else
                 `(doElem| let $valueTmpIdent:ident := $valueStx)
             let bindUnpackTmp ← `(doElem| let $unpackTmpIdent:ident := $valueTmpIdent)
-            let isTuple := jsonNodeType? value == some "Tuple"
+            -- A literal `Tuple` RHS builds a `Prod` (use `Prod.fst`/`Prod.snd`); so does a
+            -- function call returning a `tuple[...]` (the Python pre-pass only leaves such
+            -- tuple-returning calls as native unpacking — list-returning RHSs are pre-split
+            -- into subscripts and never reach here, so a `Call` here means a `Prod` result).
+            let isTuple := jsonNodeType? value == some "Tuple" || jsonNodeType? value == some "Call"
             let mut binds : Array (TSyntax `doElem) := #[bindValueTmp, bindUnpackTmp]
             for i in List.range n do
               let acc ← unpackAccessTerm isTuple unpackTmpIdent i n
