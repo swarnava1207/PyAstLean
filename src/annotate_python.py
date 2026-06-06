@@ -650,6 +650,53 @@ class Lean4Annotator(cst.CSTTransformer):
         return new_body
 
 
+# Return types of the `numpy`/`math` members PyAstLean actually implements. External stubgen
+# leaves most of these as `Any` (e.g. `np.dot` → `Any`), which then poisons the element type of
+# anything built from them (`[np.dot(...) for ...]` becomes `list[Any]`, so the iterating
+# parameter never resolves on the Lean side). These mirror the concrete result types of the
+# `Libraries.numpy`/`Libraries.math` runtime functions, so the flow inferencer can recover a real
+# element type. Only members with a single unambiguous result type are listed.
+LIBRARY_MEMBER_RETURNS: dict[str, dict[str, str]] = {
+    "numpy": {
+        # scalar reductions
+        "dot": "float", "sum": "float", "mean": "float", "average": "float", "var": "float",
+        "std": "float", "median": "float", "percentile": "float", "prod": "float", "ptp": "float",
+        "cov": "float", "corrcoef": "float", "norm": "float", "trace": "float", "det": "float",
+        "min": "float", "max": "float",
+        # integer reductions / indices
+        "argmax": "int", "argmin": "int", "searchsorted": "int",
+        # vector results
+        "cumsum": "list[float]", "cumprod": "list[float]", "diff": "list[float]",
+        "sign": "list[float]", "abs": "list[float]", "absolute": "list[float]",
+        "clip": "list[float]", "round": "list[float]", "sqrt": "list[float]", "exp": "list[float]",
+        "log": "list[float]", "log10": "list[float]", "log2": "list[float]", "sort": "list[float]",
+        "unique": "list[float]", "flatten": "list[float]", "ravel": "list[float]",
+        "take": "list[float]", "where": "list[float]", "extract": "list[float]",
+        "argsort": "list[int]", "nonzero": "list[int]",
+        # matrix results
+        "zeros": "list[list[float]]", "ones": "list[list[float]]", "eye": "list[list[float]]",
+        "identity": "list[list[float]]", "full": "list[list[float]]", "empty": "list[list[float]]",
+        "transpose": "list[list[float]]", "matmul": "list[list[float]]", "add": "list[list[float]]",
+        "subtract": "list[list[float]]", "multiply": "list[list[float]]",
+        "scale": "list[list[float]]", "reshape": "list[list[float]]", "inv": "list[list[float]]",
+        "solve": "list[list[float]]",
+        # booleans
+        "any": "bool", "all": "bool",
+    },
+    "math": {
+        "sqrt": "float", "sin": "float", "cos": "float", "tan": "float", "asin": "float",
+        "acos": "float", "atan": "float", "sinh": "float", "cosh": "float", "tanh": "float",
+        "exp": "float", "log": "float", "log2": "float", "log10": "float", "fabs": "float",
+        "pow": "float", "atan2": "float", "hypot": "float", "expm1": "float", "log1p": "float",
+        "copysign": "float", "fmod": "float", "dist": "float", "radians": "float",
+        "degrees": "float",
+        "floor": "int", "ceil": "int", "trunc": "int", "factorial": "int", "gcd": "int",
+        "lcm": "int", "isqrt": "int", "comb": "int", "perm": "int", "prod": "int",
+        "isnan": "bool", "isinf": "bool", "isfinite": "bool",
+    },
+}
+
+
 class FlowTracker(cst.CSTVisitor):
     """Collect lightweight variable/return type facts across repeated fixed-point passes."""
     def __init__(
@@ -663,6 +710,19 @@ class FlowTracker(cst.CSTVisitor):
         self.current_function: str | None = None
         self.function_stack: list[str] = []
         self.return_types: dict[str, set[str]] = {}
+        # Maps a module alias in scope (e.g. `np`) to its canonical module name (`numpy`).
+        self.module_aliases: dict[str, str] = {}
+
+    def visit_Import(self, node: cst.Import) -> bool:
+        for alias in node.names:
+            if isinstance(alias.name, cst.Name):
+                mod: str = alias.name.value
+                bound: str = alias.asname.name.value if (
+                    alias.asname is not None and isinstance(alias.asname.name, cst.Name)
+                ) else mod
+                if mod in LIBRARY_MEMBER_RETURNS:
+                    self.module_aliases[bound] = mod
+        return True
 
     def visit_ClassDef(self, node: cst.ClassDef) -> bool:
         self.current_class = node.name.value
@@ -1094,6 +1154,13 @@ class FlowTracker(cst.CSTVisitor):
             elif isinstance(node.func, cst.Attribute) and isinstance(node.func.value, cst.Name):
                 if node.func.attr.value == "get" and len(node.args) > 1:
                     return self._infer_node(node.args[1].value)
+                # Known `numpy`/`math` members resolve to the result type of their PyAstLean
+                # runtime function, recovering element types that external stubs leave as `Any`.
+                mod: str | None = self.module_aliases.get(node.func.value.value)
+                if mod is not None:
+                    lib_ret: str | None = LIBRARY_MEMBER_RETURNS[mod].get(node.func.attr.value)
+                    if lib_ret is not None:
+                        return lib_ret
                 if node.func.value.value and node.func.value.value[0].isupper():
                     name = f"{node.func.value.value}.{node.func.attr.value}"
                 if node.func.attr.value == "upper":

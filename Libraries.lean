@@ -4,4 +4,6 @@ import Libraries.Registry
 import Libraries.functools.FunctoolsDef
 import Libraries.functools.Mapping
 import Libraries.math.Mapping
+import Libraries.math.TheoremsMath
 import Libraries.numpy.Mapping
+import Libraries.numpy.TheoremsNumpy

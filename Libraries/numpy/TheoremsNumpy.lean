@@ -6,79 +6,117 @@ import Libraries.numpy.Statistics
 /-!
 # Correctness theorems for the `numpy` runtime surface
 
-Structural guarantees about the NumPy-style helpers: the *shapes* the constructors produce, and
-the *lengths* the elementwise/reduction helpers preserve. These are the properties downstream
-code silently relies on (a `zeros((r, c))` really has `r` rows of `c` columns; `cumsum` keeps the
-vector length; `diff` drops exactly one element). Numeric-value identities over `Float` are
-omitted because IEEE-754 `Float` admits no useful algebraic rewriting in Lean.
+Structural guarantees about the NumPy-style helpers: the *shapes* the constructors produce and
+the *lengths* the elementwise/reduction helpers preserve. These are the invariants downstream
+code silently relies on — `zeros((r, c))` really has `r` rows of `c` columns, `eye(n)` really is
+square, `cumsum` keeps the vector length, `diff` drops exactly one element. They double as
+machine-checked documentation: a regression that breaks one of these shapes breaks its proof.
+
+Numeric-value identities over `Float` are deliberately omitted: Lean's `Float` is IEEE-754 and
+admits no useful algebraic rewriting (no associativity, `NaN ≠ NaN`, etc.).
 -/
 
 namespace Libraries.numpy
+
+/-! ### Shared helpers -/
+
+/-- A nonnegative dimension passed as a `Nat` cast survives `pyNumpyNatFromInt` unchanged. -/
+@[simp] theorem natFromInt_natCast (r : Nat) : pyNumpyNatFromInt (r : Int) = r := by
+  unfold pyNumpyNatFromInt
+  rw [if_neg (by simp)]
+  simp
+
+/-- A list of lists whose rows all share a common length `k` is rectangular. This is the workhorse
+behind every "constructor produces a rectangular/square matrix" theorem below. -/
+theorem isRect_of_all_len {α} (m : List (List α)) (k : Nat)
+    (h : ∀ row ∈ m, row.length = k) : pyNumpyIsRectangular m = true := by
+  unfold pyNumpyIsRectangular
+  cases m with
+  | nil => rfl
+  | cons row rows =>
+    simp only [List.all_eq_true, decide_eq_true_eq]
+    intro x hx
+    rw [h x (List.mem_cons_of_mem _ hx), h row (List.mem_cons_self ..)]
 
 /-! ### Constructor shapes -/
 
 /-- `zeros((r, c))` has exactly `r` rows. -/
 @[simp] theorem pyNumpyRows_zeros (r c : Nat) :
-    pyNumpyRows (pyNumpyZeros (Int.ofNat r, Int.ofNat c)) = r := by
-  simp [pyNumpyRows, pyNumpyZeros, pyNumpyNatFromInt]
+    pyNumpyRows (pyNumpyZeros ((r : Int), (c : Int))) = r := by
+  simp [pyNumpyRows, pyNumpyZeros]
 
 /-- `ones((r, c))` has exactly `r` rows. -/
 @[simp] theorem pyNumpyRows_ones (r c : Nat) :
-    pyNumpyRows (pyNumpyOnes (Int.ofNat r, Int.ofNat c)) = r := by
-  simp [pyNumpyRows, pyNumpyOnes, pyNumpyNatFromInt]
+    pyNumpyRows (pyNumpyOnes ((r : Int), (c : Int))) = r := by
+  simp [pyNumpyRows, pyNumpyOnes]
 
-/-- Every row of `zeros((r, c))` has exactly `c` columns, so the matrix is rectangular. -/
-theorem pyNumpyZeros_isRectangular (r c : Nat) :
-    pyNumpyIsRectangular (pyNumpyZeros (Int.ofNat r, Int.ofNat c)) = true := by
-  simp [pyNumpyIsRectangular, pyNumpyZeros, pyNumpyNatFromInt, List.all_eq_true]
-
-/-- `eye(n)` is a square matrix. -/
-theorem pyNumpyEye_isSquare (n : Nat) :
-    pyNumpyIsSquare (pyNumpyEye (Int.ofNat n)) = true := by
-  simp [pyNumpyIsSquare, pyNumpyIsRectangular, pyNumpyEye, pyNumpyNatFromInt, List.all_eq_true]
-
-/-- `full(shape, v)` and `zeros(shape)` agree on shape: both replicate the same way. -/
+/-- `full((r, c), v)` has exactly `r` rows. -/
 @[simp] theorem pyNumpyRows_full {α} [PyNumpyScalar α] (r c : Nat) (v : α) :
-    pyNumpyRows (pyNumpyFull (Int.ofNat r, Int.ofNat c) v) = r := by
-  simp [pyNumpyRows, pyNumpyFull, pyNumpyNatFromInt]
+    pyNumpyRows (pyNumpyFull ((r : Int), (c : Int)) v) = r := by
+  simp [pyNumpyRows, pyNumpyFull]
+
+/-- Every row of `zeros((r, c))` has `c` columns, so the matrix is rectangular. -/
+theorem pyNumpyZeros_isRectangular (r c : Nat) :
+    pyNumpyIsRectangular (pyNumpyZeros ((r : Int), (c : Int))) = true := by
+  apply isRect_of_all_len _ c
+  intro row hrow
+  simp only [pyNumpyZeros, natFromInt_natCast, List.mem_replicate] at hrow
+  rw [hrow.2]; simp
+
+/-- Every row of `ones((r, c))` has `c` columns, so the matrix is rectangular. -/
+theorem pyNumpyOnes_isRectangular (r c : Nat) :
+    pyNumpyIsRectangular (pyNumpyOnes ((r : Int), (c : Int))) = true := by
+  apply isRect_of_all_len _ c
+  intro row hrow
+  simp only [pyNumpyOnes, natFromInt_natCast, List.mem_replicate] at hrow
+  rw [hrow.2]; simp
+
+/-- `eye(n)` is a square matrix: `n` rows, each of length `n`. -/
+theorem pyNumpyEye_isSquare (n : Nat) :
+    pyNumpyIsSquare (pyNumpyEye (n : Int)) = true := by
+  have hlen : ∀ row ∈ pyNumpyEye (n : Int), row.length = n := by
+    intro row hrow
+    simp only [pyNumpyEye, natFromInt_natCast, List.mem_map] at hrow
+    obtain ⟨i, _, rfl⟩ := hrow
+    simp
+  have hrows : (pyNumpyEye (n : Int)).length = n := by simp [pyNumpyEye]
+  unfold pyNumpyIsSquare
+  rw [isRect_of_all_len _ n hlen, Bool.true_and]
+  cases hm : pyNumpyEye (n : Int) with
+  | nil => rfl
+  | cons row rows =>
+    simp only [decide_eq_true_eq]
+    have h1 : (row :: rows).length = n := by rw [← hm]; exact hrows
+    have h2 : row.length = n := hlen row (by rw [hm]; exact List.mem_cons_self ..)
+    rw [h1, h2]
 
 /-! ### Length-preserving vector ops -/
+
+/-- The accumulator-threading worker of `cumsum` preserves length. -/
+theorem pyNumpyCumsum_go_length (a : Float) (ys : List Float) :
+    (pyNumpyCumsum.go a ys).length = ys.length := by
+  induction ys generalizing a with
+  | nil => rfl
+  | cons z zs ih => simp only [pyNumpyCumsum.go, List.length_cons]; rw [ih]
 
 /-- `cumsum` preserves the length of the input vector. -/
 @[simp] theorem pyNumpyCumsum_length {α} [PyNumpyScalar α] (xs : List α) :
     (pyNumpyCumsum xs).length = xs.length := by
   unfold pyNumpyCumsum
-  rw [pyNumpyToFloats]
-  rw [show xs.map toFloat = xs.map toFloat from rfl]
-  generalize xs.map toFloat = ys
-  rw [List.length_map] at *
-  clear xs
-  induction ys with
+  rw [pyNumpyToFloats, pyNumpyCumsum_go_length, List.length_map]
+
+/-- The accumulator-threading worker of `cumprod` preserves length. -/
+theorem pyNumpyCumprod_go_length (a : Float) (ys : List Float) :
+    (pyNumpyCumprod.go a ys).length = ys.length := by
+  induction ys generalizing a with
   | nil => rfl
-  | cons y ys ih =>
-      simp only [pyNumpyCumsum.go, List.length_cons]
-      -- the accumulator does not affect the produced length
-      have : ∀ a, (pyNumpyCumsum.go a (y :: ys)).length = (y :: ys).length := by
-        intro a
-        induction ys generalizing a y with
-        | nil => rfl
-        | cons z zs ih2 =>
-            simp only [pyNumpyCumsum.go, List.length_cons]
-            rw [ih2]
-      rw [this]
+  | cons z zs ih => simp only [pyNumpyCumprod.go, List.length_cons]; rw [ih]
 
 /-- `cumprod` preserves the length of the input vector. -/
 @[simp] theorem pyNumpyCumprod_length {α} [PyNumpyScalar α] (xs : List α) :
     (pyNumpyCumprod xs).length = xs.length := by
   unfold pyNumpyCumprod
-  rw [pyNumpyToFloats, List.length_map]
-  have : ∀ (a : Float) (ys : List Float),
-      (pyNumpyCumprod.go a ys).length = ys.length := by
-    intro a ys
-    induction ys generalizing a with
-    | nil => rfl
-    | cons z zs ih => simp only [pyNumpyCumprod.go, List.length_cons]; rw [ih]
-  rw [this]
+  rw [pyNumpyToFloats, pyNumpyCumprod_go_length, List.length_map]
 
 /-- `sign` preserves the length of the input vector. -/
 @[simp] theorem pyNumpySign_length {α} [PyNumpyScalar α] (xs : List α) :
@@ -95,10 +133,16 @@ theorem pyNumpyEye_isSquare (n : Nat) :
     (pyNumpyClip xs lo hi).length = xs.length := by
   simp [pyNumpyClip, pyNumpyToFloats]
 
-/-- `diff` removes exactly one element from a nonempty vector. -/
+/-- `round` preserves the length of the input vector. -/
+@[simp] theorem pyNumpyRound_length {α} [PyNumpyScalar α] (xs : List α) :
+    (pyNumpyRound xs).length = xs.length := by
+  simp [pyNumpyRound, pyNumpyToFloats]
+
+/-- `diff` removes exactly one element from a vector. -/
 @[simp] theorem pyNumpyDiff_length {α} [PyNumpyScalar α] (xs : List α) :
     (pyNumpyDiff xs).length = xs.length - 1 := by
-  simp [pyNumpyDiff, pyNumpyToFloats, List.length_zipWith]
+  simp only [pyNumpyDiff, pyNumpyToFloats, List.length_zipWith, List.length_drop,
+    List.length_map]
   omega
 
 end Libraries.numpy
