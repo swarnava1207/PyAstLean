@@ -71,6 +71,61 @@ def formattedValueSyntax : (kind : SyntaxNodeKind) → Json →
       `($toStringIdent $valueCode)
   | _, _ => throwError s!"Unsupported syntax category for FormattedValue node"
 
+/-- If `json` is a string-literal `Constant`, return its text (the literal pieces of an
+f-string). Otherwise `none` — those pieces are interpolated values. -/
+def jsonStringLiteral? (json : Json) : Option String :=
+  match json.getObjValAs? String "node_type" with
+  | .ok "Constant" =>
+      match json.getObjVal? "value" with
+      | .ok (.str s) => some s
+      | _ => none
+  | _ => none
+
+/-- Escape a literal chunk so it is safe inside a Lean interpolated string `s!"…"`: backslash,
+double quote and the interpolation braces are escaped, and control characters spelled out. -/
+def escapeInterpChunk (s : String) : String :=
+  s.foldl (fun acc c =>
+    acc ++ (match c with
+      | '\\' => "\\\\"
+      | '"' => "\\\""
+      | '{' => "\\{"
+      | '}' => "\\}"
+      | '\n' => "\\n"
+      | '\t' => "\\t"
+      | '\r' => "\\r"
+      | _ => c.toString)) ""
+
+/-- The term placed inside `{…}` for an interpolated f-string slot. For a `FormattedValue` the
+inner value is used directly (Lean's `s!` applies `toString`); anything else is lowered as-is. -/
+def joinedInterpTerm (valueJson : Json) : PygenM (TSyntax `term) := do
+  match valueJson.getObjValAs? String "node_type" with
+  | .ok "FormattedValue" =>
+      match valueJson.getObjVal? "value" with
+      | .ok inner => getCode inner `term
+      | .error _ => getCode valueJson `term
+  | _ => getCode valueJson `term
+
+/-- Build a Lean interpolated string `s!"lit{e}lit…"` from the literal/interpolation pieces of an
+f-string. `chunks` has exactly one more element than `interps` and they alternate
+`chunk₀ interp₀ chunk₁ … interpₙ₋₁ chunkₙ`. -/
+def mkInterpolatedStr (chunks : Array String) (interps : Array (TSyntax `term)) :
+    TSyntax `term := Id.run do
+  let n := interps.size
+  let mut children : Array Syntax := #[]
+  for i in [0:n+1] do
+    let text := escapeInterpChunk (chunks[i]!)
+    let atomStr :=
+      if i == 0 then "\"" ++ text ++ "{"
+      else if i == n then "}" ++ text ++ "\""
+      else "}" ++ text ++ "{"
+    children := children.push
+      (Syntax.node SourceInfo.none `interpolatedStrLitKind #[Syntax.atom SourceInfo.none atomStr])
+    if i < n then
+      children := children.push interps[i]!.raw
+  let interpNode := Syntax.node SourceInfo.none `interpolatedStrKind children
+  ⟨Syntax.node SourceInfo.none (Name.mkSimple "termS!_")
+    #[Syntax.atom SourceInfo.none "s!", interpNode]⟩
+
 @[pygen "JoinedStr"]
 def joinedStrSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
@@ -80,8 +135,26 @@ def joinedStrSyntax : (kind : SyntaxNodeKind) → Json →
     let valuesArray ← match valuesJson with
       | .arr arr => pure arr
       | _ => throwError s!"JoinedStr node 'values' field is not an array: {valuesJson}"
-    let valuesCodes ← valuesArray.mapM (fun valueJson => getCode valueJson `term)
+    -- The common, all-pure case lowers to a readable `s!"…{e}…"` interpolation. Effectful
+    -- pieces (e.g. `← input()` inside an f-string) can't sit inside `s!`, so those fall back to
+    -- the `do`-bound append chain below.
+    if !valuesArray.any stringJsonUsesMonadicEffect then
+      let mut chunks : Array String := #[]
+      let mut interps : Array (TSyntax `term) := #[]
+      let mut buf : String := ""
+      for valueJson in valuesArray do
+        match jsonStringLiteral? valueJson with
+        | some s => buf := buf ++ s
+        | none =>
+            chunks := chunks.push buf
+            buf := ""
+            interps := interps.push (← joinedInterpTerm valueJson)
+      chunks := chunks.push buf
+      if interps.isEmpty then
+        return Syntax.mkStrLit chunks[0]!
+      return mkInterpolatedStr chunks interps
     let appendIdent := mkIdent ``String.append
+    let valuesCodes ← valuesArray.mapM (fun valueJson => getCode valueJson `term)
     let mut res : TSyntax `term ← `("")
     let mut bindings : Array (TSyntax `doElem) := #[]
     for idx in [0:valuesCodes.size] do

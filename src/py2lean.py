@@ -851,7 +851,7 @@ def translate_to_lean(source_code, target="term", filepath = None, imports_add =
                     "",
                     "open PyAstLean",
                     "open Libraries",
-                    "",
+                    "\n",
                 ]
                 full_code = "\n".join(preamble_lines) + body_code
             else:

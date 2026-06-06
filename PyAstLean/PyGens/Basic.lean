@@ -40,12 +40,12 @@ def floatDecimalString (magnitude exponent : Nat) : String :=
     -- Left-pad so there is at least one digit before the decimal point.
     let padded :=
       if digits.length ≤ exponent then
-        String.mk (List.replicate (exponent + 1 - digits.length) '0') ++ digits
+        String.ofList (List.replicate (exponent + 1 - digits.length) '0') ++ digits
       else
         digits
     let chars := padded.toList
     let cut := chars.length - exponent
-    String.mk (chars.take cut) ++ "." ++ String.mk (chars.drop cut)
+    String.ofList (chars.take cut) ++ "." ++ String.ofList (chars.drop cut)
 
 /-- Preserve Python float literals as Lean `Float`s, even when the decimal part is `.0`.
 

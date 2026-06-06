@@ -1115,6 +1115,35 @@ class FlowTracker(cst.CSTVisitor):
                 ts = sorted([t for t in self.var_types[key] if t != "Any"])
                 if ts:
                     return " | ".join(ts)
+        if isinstance(node, cst.Subscript) and node.slice:
+            # Element access `c[i]` with an integer index: peel one container layer so
+            # `list[list[float]][i]` is `list[float]`. Slices (`c[a:b]`) keep the container type.
+            slice_node = node.slice[0].slice
+            is_index = isinstance(slice_node, cst.Index)
+            container_t: str = self._infer_node(node.value)
+            if is_index and container_t not in {"", "Any"}:
+                item_types: list[str] = []
+                for part in split_top_level(container_t, "|"):
+                    p: str = part.strip()
+                    if p == "str":
+                        item_types.append("str")
+                        continue
+                    list_inner: str | None = extract_generic_inner(p, "list")
+                    if list_inner is not None:
+                        item_types.append(list_inner)
+                        continue
+                    dict_inner: str | None = extract_generic_inner(p, "dict")
+                    if dict_inner is not None:
+                        kv = split_top_level(dict_inner, ",")
+                        item_types.append(kv[1].strip() if len(kv) > 1 else "Any")
+                        continue
+                    tup_parts = tuple_type_parts(p)
+                    if tup_parts:
+                        item_types.append(normalize_union(" | ".join(tup_parts)))
+                if item_types and all(t and t != "Any" for t in item_types):
+                    return normalize_union(" | ".join(item_types))
+            elif not is_index and container_t not in {"", "Any"}:
+                return container_t
         if isinstance(node, cst.List):
             inner: str = self._infer_node(node.elements[0].value) if node.elements else "Any"
             return f"list[{inner}]"
