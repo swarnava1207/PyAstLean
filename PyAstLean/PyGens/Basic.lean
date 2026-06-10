@@ -29,13 +29,43 @@ def numToStx (mantissa : Int) (exponent : Nat) : MetaM <| TSyntax `term := do
         let ratIdent := mkIdent ``Rat
         `(($mantissaStx : $ratIdent) / $exponentStx)
 
-/-- Preserve Python float literals as Lean `Float`s, even when the decimal part is `.0`. -/
-def floatNumToStx (mantissa : Int) (exponent : Nat) : MetaM <| TSyntax `term := do
-  let floatScientificIdent := mkIdent ``Float.ofScientific
+/-- Render `magnitude × 10⁻ᵉˣᵖᵒⁿᵉⁿᵗ` as a plain decimal string (e.g. `magnitude = 25`,
+`exponent = 2` ↦ `"0.25"`). Mirrors how `Float.ofScientific magnitude true exponent` is valued,
+so the resulting decimal literal is exactly equal to the old desugared form. -/
+def floatDecimalString (magnitude exponent : Nat) : String :=
+  let digits := toString magnitude
+  if exponent == 0 then
+    digits ++ ".0"
+  else
+    -- Left-pad so there is at least one digit before the decimal point.
+    let padded :=
+      if digits.length ≤ exponent then
+        String.ofList (List.replicate (exponent + 1 - digits.length) '0') ++ digits
+      else
+        digits
+    let chars := padded.toList
+    let cut := chars.length - exponent
+    String.ofList (chars.take cut) ++ "." ++ String.ofList (chars.drop cut)
+
+/-- Preserve Python float literals as Lean `Float`s, even when the decimal part is `.0`.
+
+When the source was written in scientific notation (`1e5`), keep the explicit
+`Float.ofScientific magnitude true exponent` form. Otherwise emit a readable decimal literal
+ascribed to `Float` (e.g. `(0.25 : Float)`). The `: Float` ascription is required because a bare
+decimal literal would otherwise resolve to `Rat` via the default instances. -/
+def floatNumToStx (mantissa : Int) (exponent : Nat) (scientific : Bool) :
+    MetaM <| TSyntax `term := do
   let magnitude := Int.natAbs mantissa
-  let magnitudeStx := Syntax.mkNumLit (toString magnitude)
-  let exponentStx := Syntax.mkNumLit (toString exponent)
-  let base ← `($floatScientificIdent $magnitudeStx true $exponentStx)
+  let base ←
+    if scientific then
+      let floatScientificIdent := mkIdent ``Float.ofScientific
+      let magnitudeStx := Syntax.mkNumLit (toString magnitude)
+      let exponentStx := Syntax.mkNumLit (toString exponent)
+      `($floatScientificIdent $magnitudeStx true $exponentStx)
+    else
+      let floatIdent := mkIdent ``Float
+      let sciLit := Syntax.mkScientificLit (floatDecimalString magnitude exponent)
+      `(($sciLit : $floatIdent))
   if mantissa < 0 then
     `(- $base:term)
   else
@@ -49,10 +79,12 @@ def constantSyntax : (kind : SyntaxNodeKind) → Json →
       s!"Constant node does not have a 'value' field or it is not a JSON value: {json}"
     let isPythonFloat :=
       json.getObjValAs? String "python_literal_kind" == .ok "float"
+    let isScientific :=
+      json.getObjValAs? String "float_notation" == .ok "scientific"
     match value with
     | .num (JsonNumber.mk mantissa exponent) =>
         if isPythonFloat then
-          floatNumToStx mantissa exponent
+          floatNumToStx mantissa exponent isScientific
         else
           numToStx mantissa exponent
     | .str s => return Syntax.mkStrLit s

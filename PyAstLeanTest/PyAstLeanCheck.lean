@@ -1,7 +1,8 @@
 import Lean
-import Regex
+import PyAstLeanTest.MiniRegex
 
 open Lean
+open PyAstLeanTest.MiniRegex
 
 namespace PyAstLeanTest
 
@@ -127,8 +128,8 @@ def literalToRegex (s : String) : String :=
 def parseTokenText? (tok : String) : Option (String × Option String) := do
   let groups ← tokenRegex.capture tok
   let name ← groups.get 1
-  let rx := (groups.get 2).map (fun s => s.copy)
-  some (name.copy, rx)
+  let rx := groups.get 2
+  some (name, rx)
 
 def consumeFirstSuffix? (text pattern : String) : Option (String × String) :=
   if pattern.isEmpty then
@@ -145,7 +146,7 @@ def consumeFirstSuffix? (text pattern : String) : Option (String × String) :=
 def compilePattern (name : String) (pattern : String) (env : CaptureEnv) :
     Except String (String × CaptureDefs) := do
   let pattern := normalizeLESymbols pattern
-  let tokens := (tokenRegex.findAll pattern).map (fun s => s.copy)
+  let tokens := tokenRegex.findAll pattern
   let mut regex := ""
   let mut rem := pattern
   let mut captureDefs : CaptureDefs := #[]
@@ -198,14 +199,14 @@ def runOrdered (name : String) (text : String) (checks : Array String) :
       | throw s!"[{name}] CHECK #{idx + 1} failed.\nExpected:\n{check}\n\nGot remaining output:\n{previewText rem}"
     let some whole := caps.get 0
       | throw s!"[{name}] internal error: missing whole-match capture."
-    let wholeTxt := whole.copy
+    let wholeTxt := whole
     if wholeTxt.isEmpty then
       throw s!"[{name}] CHECK #{idx + 1} matched an empty string; this is not allowed."
     for (capName, groupId) in captureDefs do
       match caps.get groupId with
       | some s =>
         if !env.contains capName then
-          env := env.insert capName s.copy
+          env := env.insert capName s
       | none => pure ()
     let some (_, suffix) := consumeFirstSuffix? rem wholeTxt
       | throw s!"[{name}] internal error: could not advance after CHECK #{idx + 1}."
@@ -249,14 +250,14 @@ def runMatcher (name : String) (text : String) (check : Array String) (checkNot 
       | throw s!"[{name}] missing ordered fragment:\n{checkLine}"
     let some whole := caps.get 0
       | throw s!"[{name}] internal error: missing whole-match capture."
-    let wholeTxt := whole.copy
+    let wholeTxt := whole
     if wholeTxt.isEmpty then
       throw s!"[{name}] CHECK matched an empty string; this is not allowed."
     for (capName, groupId) in captureDefs do
       match caps.get groupId with
       | some s =>
         if !env.contains capName then
-          env := env.insert capName s.copy
+          env := env.insert capName s
       | none => pure ()
     let some (_, suffix) := consumeFirstSuffix? rem wholeTxt
       | throw s!"[{name}] internal error: could not advance after CHECK."

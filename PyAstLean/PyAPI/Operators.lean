@@ -184,6 +184,20 @@ instance (priority := high) : PyHDiv Nat Nat Rat where
 instance (priority := high) : PyHDiv Rat Rat Rat where
   hDiv := fun a b => (a : Rat) / (b : Rat)
 
+-- Python true division `/` always yields a float when a float is involved. `pyLen`/`int` operands
+-- are `Int`, so e.g. `total / len(xs)` is `Float / Int`; these instances cover the mixed cases.
+instance (priority := high) : PyHDiv Float Int Float where
+  hDiv := fun a b => a / Rat.toFloat (b : Rat)
+
+instance (priority := high) : PyHDiv Int Float Float where
+  hDiv := fun a b => Rat.toFloat (a : Rat) / b
+
+instance (priority := high) : PyHDiv Float Nat Float where
+  hDiv := fun a b => a / Rat.toFloat (b : Rat)
+
+instance (priority := high) : PyHDiv Nat Float Float where
+  hDiv := fun a b => Rat.toFloat (a : Rat) / b
+
 
 /-- Python-style floor division: `a // b` truncates toward negative infinity. -/
 def pyFloorDiv (a b : Int) : Int :=

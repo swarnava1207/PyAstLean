@@ -44,6 +44,18 @@ def pyMathPi : Float :=
 def pyMathE : Float :=
   2.718281828459045
 
+/-- Python `math.tau` (`2π`). -/
+def pyMathTau : Float :=
+  6.283185307179586
+
+/-- Python `math.inf`. -/
+def pyMathInf : Float :=
+  1.0 / 0.0
+
+/-- Python `math.nan`. -/
+def pyMathNan : Float :=
+  0.0 / 0.0
+
 /-- Python `math.sqrt`, using Lean's computable floating-point square root. -/
 def pyMathSqrt {α : Type} [PyMathFloatArg α] (x : α) : Float :=
   Float.sqrt (toFloat x)
@@ -91,6 +103,75 @@ def pyMathTrunc {α : Type} [PyMathFloatArg α] (x : α) : Int :=
 /-- Python `math.pow`, returning a floating-point result. -/
 def pyMathPow {α β : Type} [PyMathFloatArg α] [PyMathFloatArg β] (x : α) (y : β) : Float :=
   Float.pow (toFloat x) (toFloat y)
+
+/-- Python `math.asin`, using Lean's computable floating-point arcsine. -/
+def pyMathAsin {α : Type} [PyMathFloatArg α] (x : α) : Float :=
+  Float.asin (toFloat x)
+
+/-- Python `math.acos`, using Lean's computable floating-point arccosine. -/
+def pyMathAcos {α : Type} [PyMathFloatArg α] (x : α) : Float :=
+  Float.acos (toFloat x)
+
+/-- Python `math.atan`, using Lean's computable floating-point arctangent. -/
+def pyMathAtan {α : Type} [PyMathFloatArg α] (x : α) : Float :=
+  Float.atan (toFloat x)
+
+/-- Python `math.sinh`, the hyperbolic sine. -/
+def pyMathSinh {α : Type} [PyMathFloatArg α] (x : α) : Float :=
+  Float.sinh (toFloat x)
+
+/-- Python `math.cosh`, the hyperbolic cosine. -/
+def pyMathCosh {α : Type} [PyMathFloatArg α] (x : α) : Float :=
+  Float.cosh (toFloat x)
+
+/-- Python `math.tanh`, the hyperbolic tangent. -/
+def pyMathTanh {α : Type} [PyMathFloatArg α] (x : α) : Float :=
+  Float.tanh (toFloat x)
+
+/-- Python `math.expm1` (`eˣ − 1`), via the floating-point exponential. -/
+def pyMathExpm1 {α : Type} [PyMathFloatArg α] (x : α) : Float :=
+  Float.exp (toFloat x) - 1.0
+
+/-- Python `math.log1p` (`log(1 + x)`), via the natural logarithm. -/
+def pyMathLog1p {α : Type} [PyMathFloatArg α] (x : α) : Float :=
+  Float.log (1.0 + toFloat x)
+
+/-- Python `math.isnan`, true when the argument is NaN. -/
+def pyMathIsnan {α : Type} [PyMathFloatArg α] (x : α) : Bool :=
+  (toFloat x).isNaN
+
+/-- Python `math.isinf`, true when the argument is positive or negative infinity. -/
+def pyMathIsinf {α : Type} [PyMathFloatArg α] (x : α) : Bool :=
+  (toFloat x).isInf
+
+/-- Python `math.isfinite`, true when the argument is neither NaN nor infinite. -/
+def pyMathIsfinite {α : Type} [PyMathFloatArg α] (x : α) : Bool :=
+  (toFloat x).isFinite
+
+/-- Python `math.copysign`, returning `|x|` with the sign of `y`. -/
+def pyMathCopysign {α β : Type} [PyMathFloatArg α] [PyMathFloatArg β] (x : α) (y : β) : Float :=
+  let xf := Float.abs (toFloat x)
+  if toFloat y < 0.0 then -xf else xf
+
+/-- Python `math.fmod`, the floating-point C-style remainder (sign follows the dividend). -/
+def pyMathFmod {α β : Type} [PyMathFloatArg α] [PyMathFloatArg β] (x : α) (y : β) : Float :=
+  let xf := toFloat x
+  let yf := toFloat y
+  let q := xf / yf
+  let qt := if q < 0.0 then Float.ceil q else Float.floor q
+  xf - yf * qt
+
+/-- Python `math.dist`, the Euclidean distance between two equal-length point vectors. -/
+def pyMathDist {α β : Type} [PyMathFloatArg α] [PyMathFloatArg β]
+    (p : List α) (q : List β) : Float :=
+  if p.length = q.length then
+    Float.sqrt ((List.zipWith (fun a b => (toFloat a - toFloat b) ^ 2) p q).foldl (· + ·) 0.0)
+  else
+    panic! "ValueError: dist() expects two points of the same dimension"
+
+/-- Python `math.prod`, the product of an iterable of integers (with optional `start`). -/
+def pyMathProd (xs : List Int) (start : Int := 1) : Int :=
+  xs.foldl (· * ·) start
 
 /-- Python `math.atan2`, using Lean's computable floating-point implementation. -/
 def pyMathAtan2 {α β : Type} [PyMathFloatArg α] [PyMathFloatArg β] (y : α) (x : β) : Float :=

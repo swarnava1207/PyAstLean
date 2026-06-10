@@ -108,18 +108,28 @@ def pyNumpyVar {α} [PyNumpyScalar α] (xs : List α) : Float :=
 def pyNumpyStd {α} [PyNumpyScalar α] (xs : List α) : Float :=
   Float.sqrt (pyNumpyVar xs)
 
-/-- Convert a float percentile to a list index. -/
+/-- Convert a float percentile to a fractional list rank. -/
 def pyNumpyPercentileIndex (n : Nat) (p : Float) : Nat :=
   let p' := if p < 0.0 then 0.0 else if p > 100.0 then 100.0 else p
   let idx := ((p' / 100.0) * Rat.toFloat ((n - 1) : Rat))
   Int.toNat (Libraries.math.floatToInt (Float.floor idx))
 
-/-- Percentile using a nearest-rank style lookup. -/
+/-- Percentile matching NumPy's default `method='linear'`: the percentile `p` maps to the
+fractional rank `(p/100)·(n-1)` in the sorted data, and the result linearly interpolates
+between the two surrounding samples. (`np.percentile([1,2,3,4], 50) = 2.5`.) -/
 def pyNumpyPercentile {α} [PyNumpyScalar α] (xs : List α) (p : Float) : Float :=
   let ys := pyNumpySortFloats (pyNumpyToFloats xs)
   match ys.length with
   | 0 => panic! "ValueError: percentile() of an empty list is undefined"
-  | n + 1 => ys.getD (pyNumpyPercentileIndex (n + 1) p) 0.0
+  | n + 1 =>
+      let p' := if p < 0.0 then 0.0 else if p > 100.0 then 100.0 else p
+      let rank := (p' / 100.0) * Rat.toFloat (n : Rat)
+      let lo := Int.toNat (Libraries.math.floatToInt (Float.floor rank))
+      let hi := Int.toNat (Libraries.math.floatToInt (Float.ceil rank))
+      let frac := rank - Float.floor rank
+      let yLo := ys.getD lo 0.0
+      let yHi := ys.getD hi 0.0
+      yLo + frac * (yHi - yLo)
 
 /-- Clip values to a closed interval. -/
 def pyNumpyClip {α} [PyNumpyScalar α] (xs : List α) (lo hi : Float) : List Float :=
@@ -284,6 +294,99 @@ def pyNumpyPut {α} [PyNumpyScalar α] (xs : List α) (indices : List Nat) (valu
       go vals indices reps
   else
     panic! "ValueError: put() expects equal numbers of indices and values"
+
+/-- Product of all elements in a vector (`np.prod`). -/
+def pyNumpyProd {α} [PyNumpyScalar α] (xs : List α) : Float :=
+  (pyNumpyToFloats xs).foldl (· * ·) 1.0
+
+/-- Cumulative sum of a vector (`np.cumsum`); the `i`th entry is the sum of `xs[0..i]`. -/
+def pyNumpyCumsum {α} [PyNumpyScalar α] (xs : List α) : List Float :=
+  let rec go (acc : Float) : List Float → List Float
+    | [] => []
+    | y :: ys => (acc + y) :: go (acc + y) ys
+  go 0.0 (pyNumpyToFloats xs)
+
+/-- Cumulative product of a vector (`np.cumprod`). -/
+def pyNumpyCumprod {α} [PyNumpyScalar α] (xs : List α) : List Float :=
+  let rec go (acc : Float) : List Float → List Float
+    | [] => []
+    | y :: ys => (acc * y) :: go (acc * y) ys
+  go 1.0 (pyNumpyToFloats xs)
+
+/-- Consecutive differences `xs[i+1] - xs[i]` (`np.diff`). Result has one fewer element. -/
+def pyNumpyDiff {α} [PyNumpyScalar α] (xs : List α) : List Float :=
+  let ys := pyNumpyToFloats xs
+  List.zipWith (fun b a => b - a) (ys.drop 1) ys
+
+/-- Peak-to-peak range `max - min` of a nonempty vector (`np.ptp`). -/
+def pyNumpyPtp {α} [PyNumpyScalar α] (xs : List α) : Float :=
+  pyNumpyMax xs - pyNumpyMin xs
+
+/-- Elementwise sign `-1 / 0 / 1` (`np.sign`). -/
+def pyNumpySign {α} [PyNumpyScalar α] (xs : List α) : List Float :=
+  (pyNumpyToFloats xs).map (fun x => if x < 0.0 then -1.0 else if x > 0.0 then 1.0 else 0.0)
+
+/-- Elementwise absolute value (`np.abs` / `np.absolute`). -/
+def pyNumpyAbs {α} [PyNumpyScalar α] (xs : List α) : List Float :=
+  (pyNumpyToFloats xs).map Float.abs
+
+/-- Elementwise binary maximum (`np.maximum`). -/
+def pyNumpyMaximum {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (xs : List α) (ys : List β) : List Float :=
+  List.zipWith (fun a b => if a < b then b else a) (pyNumpyToFloats xs) (pyNumpyToFloats ys)
+
+/-- Elementwise binary minimum (`np.minimum`). -/
+def pyNumpyMinimum {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (xs : List α) (ys : List β) : List Float :=
+  List.zipWith (fun a b => if b < a then b else a) (pyNumpyToFloats xs) (pyNumpyToFloats ys)
+
+/-- Elementwise power `xs[i] ** ys[i]` (`np.power`). -/
+def pyNumpyPower {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (xs : List α) (ys : List β) : List Float :=
+  List.zipWith Float.pow (pyNumpyToFloats xs) (pyNumpyToFloats ys)
+
+/-- Weighted average (`np.average`); with no weights this is the plain mean. The weights are
+normalized by their own sum, matching `np.average(xs, weights=ws)`. -/
+def pyNumpyAverage {α β} [PyNumpyScalar α] [PyNumpyScalar β]
+    (xs : List α) (weights : List β := []) : Float :=
+  let vals := pyNumpyToFloats xs
+  if vals.isEmpty then
+    panic! "ValueError: average() of an empty list is undefined"
+  else
+    let ws := pyNumpyToFloats weights
+    if ws.isEmpty then
+      vals.foldl (· + ·) 0.0 / Rat.toFloat (vals.length : Rat)
+    else if ws.length = vals.length then
+      let wsum := ws.foldl (· + ·) 0.0
+      if wsum == 0.0 then
+        panic! "ZeroDivisionError: weights sum to zero"
+      else
+        (List.zipWith (· * ·) vals ws).foldl (· + ·) 0.0 / wsum
+    else
+      panic! "ValueError: average() weights must match the data length"
+
+/-- Population covariance of two equal-length vectors (`np.cov(x, y, bias=True)[0,1]`). -/
+def pyNumpyCov {α β} [PyNumpyScalar α] [PyNumpyScalar β] (xs : List α) (ys : List β) : Float :=
+  let a := pyNumpyToFloats xs
+  let b := pyNumpyToFloats ys
+  if a.isEmpty || a.length ≠ b.length then
+    panic! "ValueError: cov() expects two nonempty equal-length lists"
+  else
+    let n := Rat.toFloat (a.length : Rat)
+    let μa := a.foldl (· + ·) 0.0 / n
+    let μb := b.foldl (· + ·) 0.0 / n
+    (List.zipWith (fun x y => (x - μa) * (y - μb)) a b).foldl (· + ·) 0.0 / n
+
+/-- Pearson correlation coefficient of two equal-length vectors (`np.corrcoef(x, y)[0,1]`). -/
+def pyNumpyCorrcoef {α β} [PyNumpyScalar α] [PyNumpyScalar β] (xs : List α) (ys : List β) : Float :=
+  let cov := pyNumpyCov xs ys
+  let varx := pyNumpyVar xs
+  let vary := pyNumpyVar ys
+  let denom := Float.sqrt (varx * vary)
+  if denom == 0.0 then
+    panic! "ValueError: corrcoef() is undefined for a constant input"
+  else
+    cov / denom
 
 /-- Sum all entries in a matrix. -/
 def pyNumpySum {α} [PyNumpyScalar α] (matrix : List (List α)) : Float :=

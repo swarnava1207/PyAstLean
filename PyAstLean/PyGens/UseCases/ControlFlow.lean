@@ -18,9 +18,12 @@ def exprStmtDoElemSyntax (valueJson : Json) : PygenM (TSyntax `doElem) := do
     else
       `(doElem| let _ := $valueStx)
 
-/-- Stable helper name for top-level expression statements lowered as commands. -/
+/-- Stable helper name for top-level expression statements lowered as commands. The hash is
+truncated to keep the generated name short while staying unique across the handful of top-level
+expression statements in a module. -/
 def topLevelExprCommandIdent (json : Json) : TSyntax `ident :=
-  mkIdent <| Name.mkSimple s!"__py_expr_{hash json |>.toNat}"
+  let h := (hash json).toNat % 1000000
+  mkIdent <| Name.mkSimple s!"pyStmt_{h}"
 
 @[pygen "Expr"]
 def exprSyntax : (kind : SyntaxNodeKind) → Json →

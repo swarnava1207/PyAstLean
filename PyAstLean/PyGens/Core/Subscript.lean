@@ -82,19 +82,19 @@ def subscriptTermFromValue (valueJson sliceJson : Json) (valueCode : TSyntax `te
             let sliceCode ← getCode sliceJson `term
             `($getIdent $valueCode $sliceCode)
     else
+        -- General container indexing `c[i]`, emitted with the readable `c⦋i⦌` notation (which is
+        -- definitionally `pyGetItem c i`, so it dispatches through any `PyGetItem` instance).
         let sliceType := sliceJson.getObjValAs? String "node_type"
         match sliceType with
         | .ok "Constant" =>
             let idx := sliceJson.getObjValAs? Int "value"
             match idx with
             | .ok i =>
-                let getIdent := mkIdent `PyAstLean.pyGetItem
                 let iStx ← intToStx i
-                `($getIdent $valueCode $iStx)
+                `($valueCode⦋$iStx⦌)
             | _ =>
                 let sliceCode ← getCode sliceJson `term
-                let getIdent := mkIdent `PyAstLean.pyGetItem
-                `($getIdent $valueCode $sliceCode)
+                `($valueCode⦋$sliceCode⦌)
         | .ok "UnaryOp" =>
             let op := sliceJson.getObjValAs? String "op"
             let operand := sliceJson.getObjValAs? Json "operand"
@@ -106,30 +106,24 @@ def subscriptTermFromValue (valueJson sliceJson : Json) (valueCode : TSyntax `te
                     | .ok jVal =>
                         match jVal.getNat? with
                         | .ok n =>
-                            let idx := -(n : Int)
-                            let getIdent := mkIdent `PyAstLean.pyGetItem
-                            let iStx ← intToStx idx
-                            `($getIdent $valueCode $iStx)
+                            let iStx ← intToStx (-(n : Int))
+                            `($valueCode⦋$iStx⦌)
                         | _ =>
                             let sliceCode ← getCode sliceJson `term
                             let getIdent := mkIdent `getElem!
                             `($getIdent $valueCode $sliceCode)
                     | _ =>
                         let sliceCode ← getCode sliceJson `term
-                        let getIdent := mkIdent `PyAstLean.pyGetItem
-                        `($getIdent $valueCode $sliceCode)
+                        `($valueCode⦋$sliceCode⦌)
                 | _ =>
                     let sliceCode ← getCode sliceJson `term
-                    let getIdent := mkIdent `PyAstLean.pyGetItem
-                    `($getIdent $valueCode $sliceCode)
+                    `($valueCode⦋$sliceCode⦌)
             else
                 let sliceCode ← getCode sliceJson `term
-                let getIdent := mkIdent `PyAstLean.pyGetItem
-                `($getIdent $valueCode $sliceCode)
+                `($valueCode⦋$sliceCode⦌)
         | _ =>
             let sliceCode ← getCode sliceJson `term
-            let getIdent := mkIdent `PyAstLean.pyGetItem
-            `($getIdent $valueCode $sliceCode)
+            `($valueCode⦋$sliceCode⦌)
 
 @[pygen "Subscript"]
 def subscriptSyntax : (kind : SyntaxNodeKind) → Json →

@@ -330,6 +330,11 @@ class ASTToJsonLeanVisitorBase:
         }
         if isinstance(node.value, float):
             result["python_literal_kind"] = "float"
+            # Preserve how the float was written: a source `1e5` keeps the scientific
+            # `Float.ofScientific` form; a plain decimal becomes a readable `(0.25 : Float)`.
+            segment = ast.get_source_segment(self.source_code, node) or ""
+            if "e" in segment or "E" in segment:
+                result["float_notation"] = "scientific"
         return result
         
     def visit_Expr(self, node):
