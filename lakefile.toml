@@ -10,13 +10,7 @@ pp.unicode.fun = true # pretty-prints `fun a ↦ b`
 [[require]]
 name = "mathlib"
 scope = "leanprover-community"
-rev = "v4.29.0"
-
-[[require]]
-name = "Regex"
-git = "https://github.com/pandaman64/lean-regex"
-rev = "v4.29.0"
-subDir = "regex"
+rev = "v4.30.0"
 
 [[lean_lib]]
 name = "PyAstLean"
