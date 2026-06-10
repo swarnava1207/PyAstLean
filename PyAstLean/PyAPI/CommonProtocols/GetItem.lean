@@ -20,6 +20,13 @@ class PyGetItem (α : Type) (ι : outParam Type) (β : outParam Type) where
 def pyGetItem {α ι β : Type} [PyGetItem α ι β] (c : α) (i : ι) : β :=
   PyGetItem.getItem c i
 
+/-- Readable indexing notation for the generated code: `c⦋i⦌` is exactly `pyGetItem c i`, so it
+works for every `PyGetItem` instance (lists, strings, dicts, `Option`-wrapped values) and chains
+for nested access: `m⦋i⦌⦋j⦌`.
+You can write it like \rsimplex and \lsimplex
+-/
+notation:max c "⦋" i "⦌" => pyGetItem c i
+
 /-- Lists index by `Int` with Python negative-index semantics (reusing `pyListGetItem`). -/
 instance {β : Type} [Inhabited β] : PyGetItem (List β) Int β where
   getItem xs i := pyListGetItem xs i
