@@ -22,6 +22,12 @@ structure State where
   `let mut` flag that records whether a `break` fired (so the `else` runs only on natural
   completion). `none` means the innermost loop has no `else`, so `break` lowers plainly. -/
   breakFlag : Option Name := none
+  /-- While lowering the methods of a `class C`, the class name `C` (so `self.method(..)` calls
+  inside the body dispatch to `C.method`). `none` outside any class body. -/
+  currentClass : Option String := none
+  /-- The mutator-method names of the class currently being lowered (a `self.m(..)` call to one of
+  these reassigns `self`). Empty outside a class body. -/
+  currentClassMutators : List String := []
   deriving Inhabited, Repr
 
 end PyGen
@@ -81,6 +87,55 @@ def hasVar (usedName : Name) : PygenM Bool := do
 
 def addVar (usedName : Name) : PygenM Unit := do
   modify fun st => { st with varNames := st.varNames.insert usedName }
+
+/-- Run `x` while lowering the body of `class name` (with mutator set `mutators`), so `self.m(..)`
+calls inside dispatch to `name.m` and reassign `self` when `m` mutates. Restored on exit. -/
+def withCurrentClass {α : Type} (name : String) (mutators : List String) (x : PygenM α) : PygenM α :=
+  withPygenStateField (·.currentClass) (fun st v => { st with currentClass := v }) (some name) <|
+    withPygenStateField (·.currentClassMutators)
+      (fun st v => { st with currentClassMutators := v }) mutators x
+
+/-- Metadata about a generated Python class, recorded when its `ClassDef` is lowered so later
+top-level statements can dispatch instantiation (`C(..)` → `C.mk`) and method calls
+(`obj.m(..)` → `C.m obj ..`, with mutators reassigning the receiver). -/
+structure ClassInfo where
+  methods : List String := []
+  mutators : List String := []
+  staticmethods : List String := []
+  classmethods : List String := []
+  deriving Inhabited, Repr
+
+/-- Process-global registry of generated classes. The Lean backend is a persistent server that
+streams one statement at a time with a fresh `PygenM` state per statement, so cross-statement
+class metadata cannot live in `PyGen.State`; it lives here and persists for the process. A class's
+`ClassDef` is always lowered before any statement that instantiates it (module order), so the
+registry is populated in time. -/
+initialize classRegistry : IO.Ref (Std.HashMap String ClassInfo) ←
+  IO.mkRef (Std.HashMap.emptyWithCapacity 16)
+
+def registerClass (name : String) (info : ClassInfo) : PygenM Unit := do
+  classRegistry.modify (·.insert name info)
+
+def isRegisteredClass (name : String) : PygenM Bool := do
+  return (← classRegistry.get).contains name
+
+def classInfo? (name : String) : PygenM (Option ClassInfo) := do
+  return (← classRegistry.get).get? name
+
+def methodIsMutator (className method : String) : PygenM Bool := do
+  match (← classRegistry.get).get? className with
+  | some info => return info.mutators.contains method
+  | none => return false
+
+/-- The unique class declaring method `m`, if exactly one does (else `none`: ambiguous or unknown).
+Fallback for resolving a method-call receiver's class when the receiver isn't `self`. -/
+def classOfMethod? (m : String) : PygenM (Option String) := do
+  let reg ← classRegistry.get
+  let owners := reg.toList.filterMap fun (c, info) =>
+    if info.methods.contains m then some c else none
+  match owners with
+  | [c] => return some c
+  | _ => return none
 
 instance : MonadEvalT PygenM TermElabM where
     monadEval := fun x => x.run' {}

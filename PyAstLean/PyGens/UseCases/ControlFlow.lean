@@ -120,6 +120,11 @@ def augAssignSyntax : (kind : SyntaxNodeKind) → Json →
           | "lshift" => `($(mkIdent ``PyAstLean.pyShiftLeft) $curTerm $valueCode)
           | "rshift" => `($(mkIdent ``PyAstLean.pyShiftRight) $curTerm $valueCode)
           | _ => throwError s!"Unsupported augmented assignment operator: {op}"
+        -- `self.X += v` inside a class method: `curTerm` already reads `self.X`, so rebuild
+        -- `self` with the updated field (value semantics). Guarded on a mutable `self` in scope.
+        if let some attr := selfAttrTarget? targetJson then
+          if ← hasVar `self then
+            return ← selfRecordUpdateDoElem attr updated
         match ← nestedSubscriptSetDoElem? targetJson updated with
         | some setStx =>
             -- `s[i] += v` (and nested `g[i][j] += v`) rebuild the container with the new element.

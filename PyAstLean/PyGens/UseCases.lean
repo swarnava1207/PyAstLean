@@ -1,3 +1,4 @@
+import PyAstLean.PyGens.UseCases.ClassDef
 import PyAstLean.PyGens.UseCases.Comments
 import PyAstLean.PyGens.UseCases.ControlFlow
 import PyAstLean.PyGens.UseCases.Exceptions
