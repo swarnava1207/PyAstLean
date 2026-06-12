@@ -34,6 +34,27 @@ def get_supported_libraries():
 
 SUPPORTED_LIBRARY_IMPORTS = get_supported_libraries()
 
+# Type-only / compile-time modules: they contribute nothing at runtime (their names live in
+# annotations, which `annotate_python.py` normalises to builtin generics). They are neither
+# library-mapped nor real cross-file Lean modules, so they must be dropped entirely.
+TYPE_ONLY_IMPORTS = {"typing", "typing_extensions", "__future__"}
+
+# Submodules of a supported library that act as nested namespaces (e.g. `scipy.special`). Their
+# members all flatten into the top-level library's registry, so importing the submodule (e.g.
+# `from scipy import special`) binds a *module*-kind name that resolves `special.factorial`.
+LIBRARY_SUBMODULES = {
+    "scipy": {"special", "constants", "stats", "linalg"},
+}
+
+
+def _supported_library_root(module_name):
+    """Top-level package of `module_name` if it (or its root) is a supported library, else None.
+    e.g. `scipy.special` -> `scipy`, `numpy` -> `numpy`, `os.path` -> None."""
+    if not isinstance(module_name, str) or not module_name:
+        return None
+    root = module_name.split(".")[0]
+    return root if root in SUPPORTED_LIBRARY_IMPORTS else None
+
 COMMENT_PLACEHOLDER_RE = re.compile(
     r"^(?P<indent>\s*)(?:let|def)\s+__pyastlean_comment_(?P<id>\d+)\b.*$"
 )
@@ -181,14 +202,18 @@ def _crossfile_import_lines(body):
                 if not isinstance(module_name, str):
                     continue
                 # `import math` etc. is library-mapped, not a cross-file Lean import.
-                if module_name.split(".")[0] in SUPPORTED_LIBRARY_IMPORTS:
+                top = module_name.split(".")[0]
+                if top in SUPPORTED_LIBRARY_IMPORTS or top in TYPE_ONLY_IMPORTS:
                     continue
                 add_import(_lean_module_path(module_name))
         elif node_type == "ImportFrom":
             module_name = stmt.get("module")
             if not isinstance(module_name, str) or not module_name:
                 continue
-            if module_name in SUPPORTED_LIBRARY_IMPORTS:
+            if (
+                _supported_library_root(module_name) is not None
+                or module_name.split(".")[0] in TYPE_ONLY_IMPORTS
+            ):
                 continue
             add_import(_lean_module_path(module_name))
 
@@ -493,25 +518,31 @@ def _annotate_library_imports_in_scope(body, inherited_env=None):
                     continue
                 module_name = alias_node.get("name")
                 local_name = _imported_alias_name(alias_node)
-                if (
-                    isinstance(module_name, str)
-                    and isinstance(local_name, str)
-                    and module_name in SUPPORTED_LIBRARY_IMPORTS
-                ):
-                    env[local_name] = {"kind": "module", "module": module_name}
+                root = _supported_library_root(module_name)
+                # `import scipy.special as sp` / `import numpy as np`: bind the local name to the
+                # top-level library so `sp.factorial` / `np.array` resolve through its registry.
+                if root is not None and isinstance(local_name, str):
+                    env[local_name] = {"kind": "module", "module": root}
             continue
         if node_type == "ImportFrom":
             module_name = stmt.get("module")
-            if isinstance(module_name, str) and module_name in SUPPORTED_LIBRARY_IMPORTS:
+            root = _supported_library_root(module_name)
+            if root is not None:
+                is_submodule_path = "." in module_name
                 for alias_node in stmt.get("names", []):
                     if not isinstance(alias_node, dict):
                         continue
                     member_name = alias_node.get("name")
                     local_name = _imported_alias_name(alias_node)
                     if isinstance(member_name, str) and isinstance(local_name, str):
+                        # `from scipy import special` binds a submodule namespace; `from
+                        # scipy.special import factorial` (and `from math import exp`) bind members.
+                        if not is_submodule_path and member_name in LIBRARY_SUBMODULES.get(root, set()):
+                            env[local_name] = {"kind": "module", "module": root}
+                            continue
                         env[local_name] = {
                             "kind": "member",
-                            "module": module_name,
+                            "module": root,
                             "member": member_name,
                         }
             continue

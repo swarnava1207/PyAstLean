@@ -40,11 +40,11 @@ partial def functionArgTypeSyntax? (annotationJson : Json) : PygenM (Option (TSy
       let .ok sliceJson := annotationJson.getObjValAs? Json "slice" | throwError
         s!"Function argument subscript annotation is missing a 'slice' field: {annotationJson}"
       match valueJson.getObjValAs? String "node_type", valueJson.getObjValAs? String "id" with
-      | .ok "Name", .ok "list" =>
+      | .ok "Name", .ok "list" | .ok "Name", .ok "List" =>
           match ← functionArgTypeSyntax? sliceJson with
           | some elemTy => return some (← `(List $elemTy))
           | none => return none
-      | .ok "Name", .ok "dict" =>
+      | .ok "Name", .ok "dict" | .ok "Name", .ok "Dict" =>
           match sliceJson.getObjValAs? String "node_type" with
           | .ok "Tuple" =>
               let .ok elts := sliceJson.getObjValAs? (Array Json) "elts" | throwError
