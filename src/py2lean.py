@@ -1203,11 +1203,12 @@ def main(argv=None):
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output for debugging")
     parser.add_argument(
-        "--best-effort",
-        dest="best_effort",
+        "--strict",
+        dest="strict",
         action="store_true",
-        help="Replace unsupported statements (foreign libraries, unhandled syntax) with "
-             "pyUnsupported(...) placeholders instead of failing; dropped lines are logged to stderr.",
+        help="Disable the best-effort fallback (which is ON by default): fail hard on "
+             "unsupported constructs (foreign libraries, unhandled syntax) instead of emitting "
+             "pyUnsupported(...) placeholders.",
     )
     args = parser.parse_args(argv)
     configure_logging(args.verbose)
@@ -1217,7 +1218,7 @@ def main(argv=None):
         parser.error("the following arguments are required: file")
 
     source_code = Path(file_path).read_text(encoding="utf-8")
-    result = translate_to_lean(source_code, args.target, file_path, best_effort=args.best_effort)
+    result = translate_to_lean(source_code, args.target, file_path, best_effort=not args.strict)
 
     if isinstance(result, dict):
         if result.get("result") is False:

@@ -158,9 +158,7 @@ instance : PySlice String where
 
 /--
 Best-effort fallback sink for Python constructs the transpiler does not support (foreign
-libraries like `logging`/`requests`, unhandled syntax, ...). Codegen emits this only under
-`--best-effort`; the original Python source text is carried along purely for documentation so
-the generated Lean still says what was dropped.
+libraries like `logging`/`requests`, unhandled syntax, ...).
 
 The value form is polymorphic with an `Inhabited` default so an *assignment* whose right-hand
 side was unsupported keeps its variable declared and typed — downstream code that uses it still

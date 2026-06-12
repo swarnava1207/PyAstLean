@@ -9,42 +9,39 @@ open Std Do
 
 set_option mvcgen.warning false
 
-def euclidean_distance : List Int → List Int → PyAstLean.PyExcept Float := fun (p1 : List Int) ↦
-  fun (p2 : List Int) ↦ do
-  if h : pyLen p1 != pyLen p2 then
-    throw
-        (PyAstLean.PyException.Raise "ValueError" (ToString.toString "Points must have the same number of dimensions"))
-  else
-    let _ := ()
 
-  have h : pyLen p1 = pyLen p2 := by
-    simp [pyLen]
-    apply Id.of_wp_run_eq
-    · rfl
-    · simp_all
-      sorry
-  -- Using zip, list comprehension, and math.pow
-  let mut sq_diffs :=
-    List.map
-      (fun _pair =>
-        let (a, b) := _pair;
-        Libraries.math.pyMathPow (a -ₚ b) (2 : Int))
-      (pyZip p1 p2)
-  return (Libraries.math.pyMathSqrt (pySum sq_diffs))
+/-
+Demonstrates `--best-effort`: unsupported libraries (logging, requests, random) don't abort
+the whole translation — those lines become `pyUnsupported(...)` placeholders that carry the
+original Python source, and the rest of the program transpiles and runs normally.
 
-def mySum (arr : Array Nat) : Nat := Id.run do
-  let mut total := 0
-  for x in arr do
-    total := total + x
-  return total
+    # strict (default): fails, because `logging`/`requests`/`random` aren't supported
+    python3 src/py2lean.py example_scripts/showcase/best_effort_demo.py --target command
 
-theorem mySum_correct (arr : Array Nat) : mySum arr = arr.sum := by
-  generalize h : mySum arr = x
-  apply Id.of_wp_run_eq h
-  mvcgen
-  · exact Classical.ofNonempty
-  · sorry
-  · simp_all [mySum]
-    sorry
-  · simp_all [mySum]
-    sorry
+    # best-effort: foreign lines become no-op placeholders; the real logic still runs
+    python3 src/py2lean.py example_scripts/showcase/best_effort_demo.py --target command --best-effort
+-/
+def logger :=
+  pyUnsupportedVal "logger: Logger = logging.getLogger(__name__)"
+
+def total_score := fun (scores : List Int) ↦
+  Id.run
+    (do
+      let _ := pyUnsupportedUnit "logger.info(\"scoring\")"
+      let mut blob := pyUnsupportedVal "blob = requests.get(\"http://x\")"
+      let mut total := (0 : Int)
+      for s in (PyAstLean.pyIter scores)do
+        total := total +ₚ s
+      return total)
+
+def main' :=
+  ((do
+      let _ := pyUnsupportedUnit "logging.basicConfig(level=logging.INFO)"
+      let mut scores := [(10 : Int), (20 : Int), (30 : Int), (40 : Int)]
+      let _ ← pyPrintIO [pyPrintArg "total", pyPrintArg (total_score scores)]
+      let _ ← pyPrintIO [pyPrintArg "doubled", pyPrintArg (total_score scores *ₚ (2 : Int))]) :
+    IO _)
+
+def main : IO Unit := do
+  let _ ← main'
+  pure ()
