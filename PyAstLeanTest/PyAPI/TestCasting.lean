@@ -18,6 +18,13 @@ open PyAstLean
 #guard_msgs in
 #eval pyInt "oops"
 
+-- `float(str)` must actually parse decimals (a stub once returned 0.0 for everything but
+-- inf/nan, silently breaking `float(input())`). Only exact-in-binary values are guarded.
+#guard pyFloat "2.75" == (2.75 : Float)
+#guard pyFloat "  -0.5 " == (-0.5 : Float)
+#guard pyFloat "10" == (10.0 : Float)
+#guard pyFloat "oops" == (0.0 : Float)
+
 /-- info: "[1, 2, 3]" -/
 #guard_msgs in
 #eval pyStr ([1, 2, 3] : List Int)

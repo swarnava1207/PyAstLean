@@ -5,7 +5,7 @@ namespace PyAstLean
 class PyHAdd (α β : Type) (γ : outParam Type) where
   hAdd : α → β → γ
 
-infix:65 " +ₚ " => PyHAdd.hAdd
+infixl:65 " +ₚ " => PyHAdd.hAdd
 
 @[default_instance]
 instance {α β γ} [HAdd α β γ] : PyHAdd α β γ where
@@ -41,7 +41,7 @@ instance (priority := high) : PyHAdd Int Nat Int where
 class PyHSub (α β : Type) (γ : outParam Type) where
   hSub : α → β → γ
 
-infix:65 " -ₚ " => PyHSub.hSub
+infixl:65 " -ₚ " => PyHSub.hSub
 
 @[default_instance]
 instance (priority := low) {α β γ} [HSub α β γ] : PyHSub α β γ where
@@ -60,7 +60,7 @@ instance (priority := high) : PyHSub Rat Int Rat where
 class PyHMul (α β : Type) (γ : outParam Type) where
   hMul : α → β → γ
 
-infix:70 " *ₚ " => PyHMul.hMul
+infixl:70 " *ₚ " => PyHMul.hMul
 
 @[default_instance]
 instance {α β γ} [HMul α β γ] : PyHMul α β γ where
@@ -107,12 +107,12 @@ instance (priority := high) : PyHMul Rat Rat Rat where
 class PyHPow (α β : Type) (γ : outParam Type) where
   hPow : α → β → γ
 
-infix:80 " ^ₚ " => PyHPow.hPow
+infixr:80 " ^ₚ " => PyHPow.hPow
 
 class PyModulo (α β : Type) (γ : outParam Type) where
   hMod : α → β → γ
 
-infix:70 " %ₚ " => PyModulo.hMod
+infixl:70 " %ₚ " => PyModulo.hMod
 
 def pyMod (a b : Int) : Int :=
   if b == 0 then
@@ -168,7 +168,7 @@ instance (priority := high) : Neg Rat where
 class PyHDiv (α β : Type) (γ : outParam Type) where
   hDiv : α → β → γ
 
-infix:70 " /ₚ " => PyHDiv.hDiv
+infixl:70 " /ₚ " => PyHDiv.hDiv
 
 @[default_instance]
 instance {α β γ} [HDiv α β γ] : PyHDiv α β γ where

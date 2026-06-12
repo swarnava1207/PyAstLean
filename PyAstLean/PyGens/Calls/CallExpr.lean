@@ -238,6 +238,24 @@ def lowerMinMaxCall (which : String) (argsArray : Array Json) (argsCodes : Array
         let fn := mkIdent (if which == "min" then ``pyMinBy else ``pyMaxBy)
         `($fn $keyCode $iterable)
 
+/-- Resolve the class of a method-call receiver `recv.m(...)`: `self` inside a class body resolves
+to the class being lowered; otherwise fall back to the unique registered class that declares a
+method named `attr`. `none` when it can't be determined (an unknown/ambiguous method). -/
+def resolveReceiverClass? (valueJson : Json) (attr : String) : PygenM (Option String) := do
+  if jsonNodeType? valueJson == some "Name"
+      && valueJson.getObjValAs? String "id" == .ok "self" then
+    match (← get).currentClass with
+    | some c => return some c
+    | none => pure ()
+  classOfMethod? attr
+
+/-- The class to construct for a call `f(...)` whose callee is the `Name` `funcName`: a registered
+class (`C(..)`), or `cls(..)` inside a class body (classmethod sugar). `none` for ordinary calls. -/
+def constructorClassOfName? (funcName : String) : PygenM (Option String) := do
+  if ← isRegisteredClass funcName then return some funcName
+  if funcName == "cls" then return (← get).currentClass
+  return none
+
 @[pygen "Call"]
 def callSyntax : (kind : SyntaxNodeKind) → Json →
     PygenM (TSyntax kind)
@@ -273,6 +291,42 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
           s!"Attribute node missing 'value' field: {funcJson}"
         let .ok attr := funcJson.getObjValAs? String "attr" | throwError
           s!"Attribute node missing 'attr' field: {funcJson}"
+
+        -- `ClassName.method(args)` (static/classmethod/unbound) -> `C.method args`, no receiver.
+        if let some cls := (json.getObjValAs? String "_static_class").toOption then
+          let methodIdent : TSyntax `term := mkIdent (Name.mkStr cls.toName attr)
+          let build : Array (TSyntax `term) → PygenM (TSyntax `term) := fun resolved => do
+            let mut t ← `($methodIdent $resolved*)
+            for (kwName, kwValueJson) in keyWordsMap.toList do
+              let kwValueCode ← getCode kwValueJson `term
+              t ← `($t ($(mkIdent kwName.toName):ident := $kwValueCode))
+            pure t
+          if argsArray.toList.any basicJsonUsesIOEffect then
+            return ← buildIOPureApplicationFromArgs argsArray argsCodes build
+          else
+            return ← build argsCodes
+
+        -- A method call on a known class instance (`_receiver_class` stamped by py2lean) dispatches
+        -- to `C.attr recv args` and takes precedence over the builtin-method special-cases below,
+        -- so a user method may shadow a builtin name (`get`, `pop`, …).
+        if let some cls := (json.getObjValAs? String "_receiver_class").toOption then
+          if (json.getObjValAs? Bool "_is_mutator").toOption.getD false then
+            throwError s!"Mutating method '{attr}' cannot be used as an expression under value \
+              semantics; call it as a statement on its own line."
+          let valCode ← getCode valueJson `term
+          let methodIdent : TSyntax `term := mkIdent (Name.mkStr cls.toName attr)
+          let allJsons := #[valueJson] ++ argsArray
+          let allCodes := #[valCode] ++ argsCodes
+          let build : Array (TSyntax `term) → PygenM (TSyntax `term) := fun resolved => do
+            let mut t ← `($methodIdent $resolved*)
+            for (kwName, kwValueJson) in keyWordsMap.toList do
+              let kwValueCode ← getCode kwValueJson `term
+              t ← `($t ($(mkIdent kwName.toName):ident := $kwValueCode))
+            pure t
+          if allJsons.toList.any basicJsonUsesIOEffect then
+            return ← buildIOPureApplicationFromArgs allJsons allCodes build
+          else
+            return ← build allCodes
 
         if attr == "get" then
           unless keyWordsMap.isEmpty do
@@ -321,7 +375,22 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
         | some funcName =>
             funcIdent := mkIdent funcName
         | none =>
-            throwError s!"Unsupported Python method '{attr}' encountered in Call node."
+            -- A user-defined method `recv.m(args)` -> `C.m recv args` (receiver already pushed).
+            -- Prefer the py2lean stamp (`_receiver_class`/`_is_mutator`); fall back to the registry.
+            let cls? ← match (json.getObjValAs? String "_receiver_class").toOption with
+              | some c => pure (some c)
+              | none => resolveReceiverClass? valueJson attr
+            match cls? with
+            | some cls =>
+                let isMut ← match (json.getObjValAs? Bool "_is_mutator").toOption with
+                  | some b => pure b
+                  | none => methodIsMutator cls attr
+                if isMut then
+                  throwError s!"Mutating method '{attr}' cannot be used as an expression under \
+                    value semantics; call it as a statement on its own line."
+                funcIdent := mkIdent (Name.mkStr cls.toName attr)
+            | none =>
+                throwError s!"Unsupported Python method '{attr}' encountered in Call node."
       else
         match funcJson.getObjValAs? String "node_type", funcJson.getObjValAs? String "id" with
         | .ok "Name", .ok "print" => do
@@ -330,7 +399,7 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
               unless supportedKeywords.contains kwName do
                 throwError s!"print() keyword argument '{kwName}' is not supported yet."
             return ← buildIOActionApplicationFromArgs argsArray argsCodes fun resolvedArgs => do
-              let pyPrintIOIdent := mkIdent ``pyPrintIO
+              let pyPrintIOIdent := mkIdent `pyPrintIO
               let printArgs ← buildPrintArgsList argsArray resolvedArgs
               match keyWordsMap.get? "sep", keyWordsMap.get? "end" with
               | none, none =>
@@ -448,6 +517,12 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
         | .ok "Name", .ok "min" => return ← lowerMinMaxCall "min" argsArray argsCodes keyWordsMap
         | .ok "Name", .ok "max" => return ← lowerMinMaxCall "max" argsArray argsCodes keyWordsMap
         | .ok "Name", .ok funcName =>
+            -- Class instantiation `C(args)` (or `cls(args)` in a classmethod) -> `C.mk args`.
+            -- Prefer the py2lean dispatch stamp (`_class_ctor`); fall back to the local registry.
+            match ← (do match (json.getObjValAs? String "_class_ctor").toOption with
+                        | some c => pure (some c) | none => constructorClassOfName? funcName) with
+            | some cls => funcIdent := (mkIdent (Name.mkStr cls.toName "new") : TSyntax `term)
+            | none =>
             -- Variadic builtins that fold a binary runtime function over their args (e.g. `zip`)
             -- are handled generically from the `variadicFoldBuiltin?` registry — one handler for
             -- all of them, so a new such builtin is a registry row, not a branch here.
@@ -459,7 +534,7 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
               let foldIdent := mkIdent foldFn
               return ← buildIOPureApplicationFromArgs argsArray argsCodes fun resolvedArgs => do
                 foldBinaryOverArgs foldIdent dir resolvedArgs
-            match pythonBuiltinMap? funcName with
+            else match pythonBuiltinMap? funcName with
             | some mappedName => funcIdent := (mkIdent mappedName : TSyntax `term)
             | none =>
                 let mappedName ← leanName funcName.toName
@@ -516,6 +591,56 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
           s!"Attribute node missing 'value' field: {funcJson}"
         let .ok attr := funcJson.getObjValAs? String "attr" | throwError
           s!"Attribute node missing 'attr' field: {funcJson}"
+
+        -- `ClassName.method(args)` (static/classmethod/unbound) as a statement.
+        if let some cls := (json.getObjValAs? String "_static_class").toOption then
+          let methodIdent : TSyntax `term := mkIdent (Name.mkStr cls.toName attr)
+          let build : Array (TSyntax `term) → PygenM (TSyntax `term) := fun resolved => do
+            let mut t ← `($methodIdent $resolved*)
+            for (kwName, kwValueJson) in keyWordsMap.toList do
+              let kwValueCode ← getCode kwValueJson `term
+              t ← `($t ($(mkIdent kwName.toName):ident := $kwValueCode))
+            pure t
+          if argsArray.toList.any basicJsonUsesIOEffect then
+            let t ← buildIOPureApplicationFromArgs argsArray argsCodes build
+            return ← `(doElem| let _ ← $t:term)
+          else
+            let t ← build argsCodes
+            if basicJsonUsesMonadicEffect json then
+              return ← `(doElem| let _ ← $t:term)
+            else
+              return ← `(doElem| let _ := $t)
+
+        -- A method call on a known class instance (`_receiver_class` stamped by py2lean) dispatches
+        -- here, taking precedence over the builtin-method special-cases. A mutator on a bare
+        -- variable reassigns it (`obj := C.m obj args`); a getter is run/bound like any call.
+        if let some cls := (json.getObjValAs? String "_receiver_class").toOption then
+          let methodIdent : TSyntax `term := mkIdent (Name.mkStr cls.toName attr)
+          if (json.getObjValAs? Bool "_is_mutator").toOption.getD false then
+            if jsonNodeType? valueJson == some "Name" then
+              let targetIdent ← getCode valueJson `ident
+              return ← `(doElem| $targetIdent:ident := $methodIdent $targetIdent $argsCodes*)
+            else
+              throwError s!"Mutating method '{attr}' on a non-variable receiver is not supported \
+                under value semantics."
+          let valCode ← getCode valueJson `term
+          let allJsons := #[valueJson] ++ argsArray
+          let allCodes := #[valCode] ++ argsCodes
+          let build : Array (TSyntax `term) → PygenM (TSyntax `term) := fun resolved => do
+            let mut t ← `($methodIdent $resolved*)
+            for (kwName, kwValueJson) in keyWordsMap.toList do
+              let kwValueCode ← getCode kwValueJson `term
+              t ← `($t ($(mkIdent kwName.toName):ident := $kwValueCode))
+            pure t
+          if allJsons.toList.any basicJsonUsesIOEffect then
+            let t ← buildIOPureApplicationFromArgs allJsons allCodes build
+            return ← `(doElem| let _ ← $t:term)
+          else
+            let t ← build allCodes
+            if basicJsonUsesMonadicEffect json then
+              return ← `(doElem| let _ ← $t:term)
+            else
+              return ← `(doElem| let _ := $t)
 
         if attr == "append" then
           unless keyWordsMap.isEmpty do
@@ -592,7 +717,28 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
         | some funcName =>
             funcIdent := mkIdent funcName
         | none =>
-            throwError s!"Unsupported Python method '{attr}' encountered in Call node."
+            -- User method in statement position. A mutator on a bare variable receiver reassigns
+            -- it (`obj := C.m obj args`, value semantics); a getter falls through to `C.m recv …`.
+            let cls? ← match (json.getObjValAs? String "_receiver_class").toOption with
+              | some c => pure (some c)
+              | none => resolveReceiverClass? valueJson attr
+            match cls? with
+            | some cls =>
+                let isMut ← match (json.getObjValAs? Bool "_is_mutator").toOption with
+                  | some b => pure b
+                  | none => methodIsMutator cls attr
+                if isMut then
+                  if jsonNodeType? valueJson == some "Name" then
+                    let targetIdent ← getCode valueJson `ident
+                    let methodIdent := mkIdent (Name.mkStr cls.toName attr)
+                    return ← `(doElem| $targetIdent:ident := $methodIdent $targetIdent $argsCodes*)
+                  else
+                    throwError s!"Mutating method '{attr}' on a non-variable receiver is not \
+                      supported under value semantics."
+                else
+                  funcIdent := mkIdent (Name.mkStr cls.toName attr)
+            | none =>
+                throwError s!"Unsupported Python method '{attr}' encountered in Call node."
       else
         match funcJson.getObjValAs? String "node_type", funcJson.getObjValAs? String "id" with
         | .ok "Name", .ok "print" => do
@@ -601,7 +747,7 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
               unless supportedKeywords.contains kwName do
                 throwError s!"print() keyword argument '{kwName}' is not supported yet."
             let t ← buildIOActionApplicationFromArgs argsArray argsCodes fun resolvedArgs => do
-              let pyPrintIOIdent := mkIdent ``pyPrintIO
+              let pyPrintIOIdent := mkIdent `pyPrintIO
               let printArgs ← buildPrintArgsList argsArray resolvedArgs
               match keyWordsMap.get? "sep", keyWordsMap.get? "end" with
               | none, none =>
@@ -704,6 +850,10 @@ def callSyntax : (kind : SyntaxNodeKind) → Json →
             else
               return ← `(doElem| let _ := $t)
         | .ok "Name", .ok funcName =>
+            match ← (do match (json.getObjValAs? String "_class_ctor").toOption with
+                        | some c => pure (some c) | none => constructorClassOfName? funcName) with
+            | some cls => funcIdent := (mkIdent (Name.mkStr cls.toName "new") : TSyntax `term)
+            | none =>
             match pythonBuiltinMap? funcName with
             | some mappedName => funcIdent := (mkIdent mappedName : TSyntax `term)
             | none =>

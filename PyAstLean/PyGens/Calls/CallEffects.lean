@@ -10,42 +10,48 @@ namespace PyAstLean
 
 /-- Build the `List PyPrintArg` term for a `print(...)` call's arguments.
 
-Each ordinary argument becomes `PyPrintArg.mk (pyStringify arg)`. A `*iterable` (`Starred`)
-argument is spread: its elements are each mapped to a `PyPrintArg`. The pieces are
-concatenated into one `List PyPrintArg`.
+Each ordinary argument becomes `pyPrintArg arg`; the common case (no `*iterable` spread) is a
+single list literal `[pyPrintArg a, pyPrintArg b, …]`, which reads far better than a chain of
+`++`-joined singletons. A `*iterable` (`Starred`) argument is spread with `List.map pyPrintArg`,
+and only then are the pieces concatenated.
 
-We wrap arguments explicitly via `pyStringify` rather than relying on the `CoeOut` into a
-`List PyPrintArg` literal: the coercion pushes the expected element type `PyPrintArg` into
-each argument, which breaks polymorphic argument terms such as `pyListGetItem a i` (the
-element type unifies with `PyPrintArg`, then demands `Inhabited PyPrintArg`). Applying
-`pyStringify` lets each argument elaborate at its natural type first; the result is identical
-for fixed-type arguments. -/
+`pyPrintArg` applies `pyStringify` eagerly rather than relying on the `CoeOut` into a `List PyPrintArg`
+literal: the coercion would push the expected element type `PyPrintArg` into each argument, which
+breaks polymorphic argument terms such as `pyListGetItem a i` (the element type unifies with
+`PyPrintArg`, then demands `Inhabited PyPrintArg`). Letting each argument elaborate at its natural
+type first gives identical results for fixed-type arguments. -/
 def buildPrintArgsList (argsArray : Array Json) (resolvedArgs : Array (TSyntax `term)) :
     PygenM (TSyntax `term) := do
-  let printArgIdent := mkIdent ``PyAstLean.PyPrintArg.mk
-  let stringifyIdent := mkIdent ``PyAstLean.pyStringify
-  -- Each `part` is itself a `List PyPrintArg` (a singleton for ordinary args, the spread for
-  -- starred args); we concatenate them.
-  let mut parts : Array (TSyntax `term) := #[]
-  for i in [0:resolvedArgs.size] do
-    let code := resolvedArgs[i]!
-    let isStarred := match argsArray[i]? with
-      | some argJson =>
-          match argJson.getObjValAs? String "node_type" with
-          | .ok "Starred" => true
-          | _ => false
-      | none => false
-    if isStarred then
-      parts := parts.push (← `(List.map (fun __e => $printArgIdent ($stringifyIdent __e)) $code))
-    else
-      parts := parts.push (← `([$printArgIdent ($stringifyIdent $code)]))
-  match parts.toList with
-  | [] => `(([] : List PyAstLean.PyPrintArg))
-  | first :: rest =>
-      let mut acc := first
-      for p in rest do
-        acc ← `($acc ++ $p)
-      pure acc
+  -- Emit the print helpers as bare names; every generated file `open`s `PyAstLean`, so
+  -- `pyPrintArg`/`pyPrintIO` resolve without the noisy `PyAstLean.` prefix.
+  let argIdent := mkIdent `pyPrintArg
+  let isStarred (i : Nat) : Bool :=
+    match argsArray[i]? with
+    | some argJson => argJson.getObjValAs? String "node_type" == .ok "Starred"
+    | none => false
+  -- Common case: no spread → one clean `[pyArg a, pyArg b, …]` literal.
+  if (List.range resolvedArgs.size).all (fun i => !isStarred i) then
+    match resolvedArgs.toList with
+    | [] => `(([] : List PyAstLean.PyPrintArg))
+    | _ =>
+        let elems ← resolvedArgs.mapM (fun code => `($argIdent $code))
+        `([$elems,*])
+  else
+    -- A `*iterable` is present: build each part as a `List PyPrintArg` and concatenate.
+    let mut parts : Array (TSyntax `term) := #[]
+    for i in [0:resolvedArgs.size] do
+      let code := resolvedArgs[i]!
+      if isStarred i then
+        parts := parts.push (← `(List.map $argIdent $code))
+      else
+        parts := parts.push (← `([$argIdent $code]))
+    match parts.toList with
+    | [] => `(([] : List PyAstLean.PyPrintArg))
+    | first :: rest =>
+        let mut acc := first
+        for p in rest do
+          acc ← `($acc ++ $p)
+        pure acc
 
 /-- Local copy of the exception-effect probe so call lowering can avoid cyclic imports. -/
 partial def basicJsonUsesExceptionEffect (json : Json) : Bool :=
@@ -335,7 +341,7 @@ partial def hoistIOTerm (json : Json) : PygenM (Array (TSyntax `doElem) × TSynt
               resolvedArgs := resolvedArgs.push argTerm
             else
               resolvedArgs := resolvedArgs.push (← getCode argJson `term)
-          let pyPrintIOIdent := mkIdent ``pyPrintIO
+          let pyPrintIOIdent := mkIdent `pyPrintIO
           let printArgs ← buildPrintArgsList argsArray resolvedArgs
           let action ← match keyWordsMap.get? "sep", keyWordsMap.get? "end" with
             | none, none =>

@@ -34,6 +34,27 @@ def get_supported_libraries():
 
 SUPPORTED_LIBRARY_IMPORTS = get_supported_libraries()
 
+# Type-only / compile-time modules: they contribute nothing at runtime (their names live in
+# annotations, which `annotate_python.py` normalises to builtin generics). They are neither
+# library-mapped nor real cross-file Lean modules, so they must be dropped entirely.
+TYPE_ONLY_IMPORTS = {"typing", "typing_extensions", "__future__"}
+
+# Submodules of a supported library that act as nested namespaces (e.g. `scipy.special`). Their
+# members all flatten into the top-level library's registry, so importing the submodule (e.g.
+# `from scipy import special`) binds a *module*-kind name that resolves `special.factorial`.
+LIBRARY_SUBMODULES = {
+    "scipy": {"special", "constants", "stats", "linalg"},
+}
+
+
+def _supported_library_root(module_name):
+    """Top-level package of `module_name` if it (or its root) is a supported library, else None.
+    e.g. `scipy.special` -> `scipy`, `numpy` -> `numpy`, `os.path` -> None."""
+    if not isinstance(module_name, str) or not module_name:
+        return None
+    root = module_name.split(".")[0]
+    return root if root in SUPPORTED_LIBRARY_IMPORTS else None
+
 COMMENT_PLACEHOLDER_RE = re.compile(
     r"^(?P<indent>\s*)(?:let|def)\s+__pyastlean_comment_(?P<id>\d+)\b.*$"
 )
@@ -181,14 +202,18 @@ def _crossfile_import_lines(body):
                 if not isinstance(module_name, str):
                     continue
                 # `import math` etc. is library-mapped, not a cross-file Lean import.
-                if module_name.split(".")[0] in SUPPORTED_LIBRARY_IMPORTS:
+                top = module_name.split(".")[0]
+                if top in SUPPORTED_LIBRARY_IMPORTS or top in TYPE_ONLY_IMPORTS:
                     continue
                 add_import(_lean_module_path(module_name))
         elif node_type == "ImportFrom":
             module_name = stmt.get("module")
             if not isinstance(module_name, str) or not module_name:
                 continue
-            if module_name in SUPPORTED_LIBRARY_IMPORTS:
+            if (
+                _supported_library_root(module_name) is not None
+                or module_name.split(".")[0] in TYPE_ONLY_IMPORTS
+            ):
                 continue
             add_import(_lean_module_path(module_name))
 
@@ -493,32 +518,47 @@ def _annotate_library_imports_in_scope(body, inherited_env=None):
                     continue
                 module_name = alias_node.get("name")
                 local_name = _imported_alias_name(alias_node)
-                if (
-                    isinstance(module_name, str)
-                    and isinstance(local_name, str)
-                    and module_name in SUPPORTED_LIBRARY_IMPORTS
-                ):
-                    env[local_name] = {"kind": "module", "module": module_name}
+                root = _supported_library_root(module_name)
+                # `import scipy.special as sp` / `import numpy as np`: bind the local name to the
+                # top-level library so `sp.factorial` / `np.array` resolve through its registry.
+                if root is not None and isinstance(local_name, str):
+                    env[local_name] = {"kind": "module", "module": root}
             continue
         if node_type == "ImportFrom":
             module_name = stmt.get("module")
-            if isinstance(module_name, str) and module_name in SUPPORTED_LIBRARY_IMPORTS:
+            root = _supported_library_root(module_name)
+            if root is not None:
+                is_submodule_path = "." in module_name
                 for alias_node in stmt.get("names", []):
                     if not isinstance(alias_node, dict):
                         continue
                     member_name = alias_node.get("name")
                     local_name = _imported_alias_name(alias_node)
                     if isinstance(member_name, str) and isinstance(local_name, str):
+                        # `from scipy import special` binds a submodule namespace; `from
+                        # scipy.special import factorial` (and `from math import exp`) bind members.
+                        if not is_submodule_path and member_name in LIBRARY_SUBMODULES.get(root, set()):
+                            env[local_name] = {"kind": "module", "module": root}
+                            continue
                         env[local_name] = {
                             "kind": "member",
-                            "module": module_name,
+                            "module": root,
                             "member": member_name,
                         }
             continue
 
         _annotate_library_refs_in_expr(stmt, env)
 
-        if node_type == "FunctionDef":
+        if node_type == "ClassDef":
+            # Class methods are FunctionDefs under "methods"; annotate library refs in each body.
+            for method in stmt.get("methods", []):
+                if not isinstance(method, dict):
+                    continue
+                child_env = dict(env)
+                for arg_name in _function_arg_names(method):
+                    child_env.pop(arg_name, None)
+                _annotate_library_imports_in_scope(method.get("body", []), child_env)
+        elif node_type == "FunctionDef":
             child_env = dict(env)
             for arg_name in _function_arg_names(stmt):
                 child_env.pop(arg_name, None)
@@ -811,10 +851,227 @@ def invoke_lean_backend(ast_json, target, check=True, client=None):
     except Exception as err:
         return {"result": False, "error": str(err)}
 
+def _references_name(node, target):
+    """Recursively check whether a JSON subtree references a `Name` with id `target`."""
+    if isinstance(node, dict):
+        if node.get("node_type") == "Name" and node.get("id") == target:
+            return True
+        return any(_references_name(v, target) for v in node.values())
+    if isinstance(node, list):
+        return any(_references_name(x, target) for x in node)
+    return False
+
+
+def _mutual_recursion_groups(body):
+    """Map each top-level function name to its mutual-recursion group (a strongly-connected
+    component of the call graph). Singletons are self- or non-recursive; groups of size >= 2 are
+    mutually recursive and must be emitted together inside a Lean `mutual … end` block.
+
+    The backend translates one top-level statement at a time, so it never sees two functions
+    together; this whole-module analysis lives here and drives sending a group as one `Module`."""
+    funcs = [
+        (s.get("name"), s)
+        for s in body
+        if isinstance(s, dict) and s.get("node_type") == "FunctionDef" and isinstance(s.get("name"), str)
+    ]
+    names = [n for n, _ in funcs]
+    reach = {n: {m for m in names if _references_name(b, m)} for n, b in funcs}
+    # Transitive closure of "references".
+    changed = True
+    while changed:
+        changed = False
+        for n in names:
+            for r in list(reach[n]):
+                extra = reach.get(r, set()) - reach[n]
+                if extra:
+                    reach[n] |= extra
+                    changed = True
+    # SCC of n = every m that n reaches and that reaches n back.
+    return {
+        n: frozenset([n] + [m for m in reach[n] if m != n and n in reach.get(m, set())])
+        for n in names
+    }
+
+
+def _collect_class_table(body):
+    """Build {class_name: {methods, mutators, fields, bases}} from the module's ClassDefs, folding
+    a single base class's members into each subclass (so inherited methods dispatch correctly)."""
+    table = {}
+    for s in body:
+        if isinstance(s, dict) and s.get("node_type") == "ClassDef":
+            table[s["name"]] = {
+                "methods": set(m.get("name") for m in s.get("methods", [])),
+                "mutators": set(s.get("mutators", [])),
+                "fields": set(f.get("name") for f in s.get("fields", [])),
+                "statics": set(s.get("staticmethods", [])) | set(s.get("classmethods", [])),
+                "bases": [b.get("id") for b in s.get("bases", []) if isinstance(b, dict)],
+            }
+    for info in table.values():
+        for base in info["bases"]:
+            if base in table:
+                info["methods"] |= table[base]["methods"]
+                info["mutators"] |= table[base]["mutators"]
+                info["fields"] |= table[base]["fields"]
+    return table
+
+
+def _prune_inherited_fields(body):
+    """Drop a subclass ClassDef's fields that are already declared by its base, so the emitted Lean
+    `structure Sub extends Base` does not redeclare an inherited field (which Lean rejects)."""
+    own = {}
+    for s in body:
+        if isinstance(s, dict) and s.get("node_type") == "ClassDef":
+            own[s["name"]] = {f.get("name") for f in s.get("fields", [])}
+            own[s["name"]] |= set()  # ensure a set even with no fields
+    # Transitive base-field set per class (single inheritance).
+    bases = {
+        s["name"]: [b.get("id") for b in s.get("bases", []) if isinstance(b, dict)]
+        for s in body
+        if isinstance(s, dict) and s.get("node_type") == "ClassDef"
+    }
+    def base_fields(name, seen=None):
+        seen = seen or set()
+        acc = set()
+        for base in bases.get(name, []):
+            if base in own and base not in seen:
+                seen.add(base)
+                acc |= own[base] | base_fields(base, seen)
+        return acc
+    for s in body:
+        if isinstance(s, dict) and s.get("node_type") == "ClassDef":
+            inherited = base_fields(s["name"])
+            if inherited:
+                s["fields"] = [f for f in s.get("fields", []) if f.get("name") not in inherited]
+
+
+def _method_owner_index(table):
+    """Map a method name to its class when exactly one class declares it (ambiguous names omitted).
+    Used to resolve a method-call receiver's class when its variable type is otherwise unknown."""
+    owners = {}
+    for cname, info in table.items():
+        for m in info["methods"]:
+            owners.setdefault(m, set()).add(cname)
+    return {m: next(iter(cs)) for m, cs in owners.items() if len(cs) == 1}
+
+
+def _stamp_class_dispatch(ast_json):
+    """Annotate Call nodes with class-dispatch hints so the Lean backend (which sees one statement
+    at a time, with no shared state) can lower them deterministically:
+      * instantiation `C(..)`  -> `_class_ctor: "C"`
+      * method call `obj.m(..)` -> `_receiver_class: "C"`, `_is_mutator: bool`
+    Receiver class is resolved from `self` (the enclosing class), tracked `x = C(..)` bindings,
+    typed parameters, or a method name unique to one class."""
+    if ast_json.get("node_type") != "Module":
+        return ast_json
+    body = ast_json.get("body", [])
+    table = _collect_class_table(body)
+    if not table:
+        return ast_json
+    _prune_inherited_fields(body)
+    owners = _method_owner_index(table)
+
+    def ctor_class_of(func, current_class):
+        if isinstance(func, dict) and func.get("node_type") == "Name":
+            fid = func.get("id")
+            if fid in table:
+                return fid
+            if fid == "cls" and current_class:
+                return current_class
+        return None
+
+    def receiver_class_of(recv, scope, current_class, method):
+        if isinstance(recv, dict) and recv.get("node_type") == "Name":
+            rid = recv.get("id")
+            if rid == "self" and current_class:
+                return current_class
+            if rid in scope:
+                return scope[rid]
+        if method in owners:
+            return owners[method]
+        return None
+
+    def walk_expr(node, scope, current_class):
+        """Stamp Calls anywhere inside an expression (scope is read-only here)."""
+        if isinstance(node, list):
+            for x in node:
+                walk_expr(x, scope, current_class)
+            return
+        if not isinstance(node, dict):
+            return
+        if node.get("node_type") == "Call":
+            func = node.get("func")
+            cls = ctor_class_of(func, current_class)
+            if cls is not None:
+                node["_class_ctor"] = cls
+            elif isinstance(func, dict) and func.get("node_type") == "Attribute":
+                method = func.get("attr")
+                recv = func.get("value")
+                # `ClassName.method(...)` (static, classmethod, or an unbound call passing an
+                # explicit instance) calls `C.method` directly without prepending a receiver.
+                if (isinstance(recv, dict) and recv.get("node_type") == "Name"
+                        and recv.get("id") in table
+                        and method in table[recv["id"]]["methods"]):
+                    node["_static_class"] = recv["id"]
+                else:
+                    rcls = receiver_class_of(recv, scope, current_class, method)
+                    if rcls is not None and method in table.get(rcls, {}).get("methods", set()):
+                        node["_receiver_class"] = rcls
+                        node["_is_mutator"] = method in table[rcls]["mutators"]
+        for v in node.values():
+            walk_expr(v, scope, current_class)
+
+    def param_scope(funcdef):
+        """Seed a function scope with parameters whose annotation names a known class."""
+        sc = {}
+        args = (funcdef.get("args") or {}).get("args", [])
+        for a in args:
+            ann = a.get("annotation")
+            if isinstance(ann, dict) and ann.get("node_type") == "Name" and ann.get("id") in table:
+                sc[a.get("arg")] = ann["id"]
+        return sc
+
+    def walk_stmts(stmts, scope, current_class):
+        for stmt in stmts:
+            if not isinstance(stmt, dict):
+                continue
+            nt = stmt.get("node_type")
+            if nt == "ClassDef":
+                cname = stmt.get("name")
+                for m in stmt.get("methods", []):
+                    msc = param_scope(m)
+                    walk_stmts(m.get("body", []), msc, cname)
+                continue
+            if nt in ("FunctionDef", "AsyncFunctionDef"):
+                walk_stmts(stmt.get("body", []), param_scope(stmt), current_class)
+                continue
+            # Stamp every expression in the statement, then learn `x = C(..)` bindings.
+            walk_expr(stmt, scope, current_class)
+            if nt == "Assign":
+                target = stmt.get("target")
+                value = stmt.get("value")
+                if (isinstance(target, dict) and target.get("node_type") == "Name"
+                        and isinstance(value, dict) and value.get("node_type") == "Call"):
+                    cls = ctor_class_of(value.get("func"), current_class)
+                    if cls is not None:
+                        scope[target["id"]] = cls
+            # Recurse into compound-statement blocks (their bodies share this scope).
+            for block_attr in ("body", "orelse", "finalbody"):
+                blk = stmt.get(block_attr)
+                if isinstance(blk, list):
+                    walk_stmts(blk, scope, current_class)
+            for handler in stmt.get("handlers", []) or []:
+                if isinstance(handler, dict):
+                    walk_stmts(handler.get("body", []), scope, current_class)
+
+    walk_stmts(body, {}, None)
+    return ast_json
+
+
 def translate_to_lean(source_code, target="term", filepath = None, imports_add = True):
     """Translate Python source to Lean via JSON IR and the Lean backend executable."""
     json_ir = translate_to_json(source_code, filepath)
     ast_json = json.loads(json_ir)
+    _stamp_class_dispatch(ast_json)
     client = _LEAN_BACKEND
 
     if ast_json.get("node_type") == "Module":
@@ -824,6 +1081,8 @@ def translate_to_lean(source_code, target="term", filepath = None, imports_add =
             # part with a single newline so they read as leading comments, while real
             # declarations are separated by a blank line.
             code_parts = []
+            mutual_groups = _mutual_recursion_groups(body)
+            emitted_funcs = set()
             for stmt in body:
                 # A top-level Python `pass` is a true no-op, so there is no Lean command to emit.
                 if stmt.get("node_type") in {"Pass", "Import", "ImportFrom"}:
@@ -831,10 +1090,32 @@ def translate_to_lean(source_code, target="term", filepath = None, imports_add =
                 if stmt.get("node_type") in {"Comment", "DocString"}:
                     code_parts.append((True, _direct_comment_code(stmt)))
                     continue
+                code_key = f"lean_{target}"
+                # Mutually-recursive functions can't be separate `def`s — send the whole group as a
+                # single `Module` so the backend emits one `mutual … end` block.
+                if stmt.get("node_type") == "FunctionDef":
+                    name = stmt.get("name")
+                    if name in emitted_funcs:
+                        continue
+                    group = mutual_groups.get(name, frozenset([name]))
+                    if len(group) >= 2:
+                        members = [
+                            s for s in body
+                            if isinstance(s, dict) and s.get("node_type") == "FunctionDef"
+                            and s.get("name") in group
+                        ]
+                        module_node = {"node_type": "Module", "body": members}
+                        result = invoke_lean_backend(module_node, target, check=False, client=client)
+                        if result.get("result") is False:
+                            return result
+                        if code_key not in result:
+                            return {"result": False, "error": f"Missing '{code_key}' in backend response."}
+                        code_parts.append((False, result[code_key]))
+                        emitted_funcs.update(group)
+                        continue
                 result = invoke_lean_backend(stmt, target, check=False, client=client)
                 if result.get("result") is False:
                     return result
-                code_key = f"lean_{target}"
                 if code_key not in result:
                     return {"result": False, "error": f"Missing '{code_key}' in backend response."}
                 code_parts.append((False, _inject_comments_into_lean(stmt, result[code_key])))

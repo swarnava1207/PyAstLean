@@ -30,6 +30,19 @@ structure PyPrintArg where
 instance {α : Type u} [PyPrintable α] : CoeOut α PyPrintArg where
   coe x := ⟨pyStringify x⟩
 
+/--
+Wrap one printable value as a `print(...)` argument (the lowercase smart constructor for
+`PyPrintArg`).
+
+Generated `print(...)` code emits `pyPrintArg x` per argument — far tidier than the explicit
+`PyPrintArg.mk (pyStringify x)` it replaces — while still applying `pyStringify` eagerly, so each
+argument elaborates at its own type before the heterogeneous `List PyPrintArg` is assembled (the
+reason codegen can't just lean on the `CoeOut` coercion, which would force `PyPrintArg` onto
+polymorphic argument terms).
+-/
+@[inline] def pyPrintArg {α : Type u} [PyPrintable α] (x : α) : PyPrintArg :=
+  ⟨pyStringify x⟩
+
 /-- Join already-formatted pieces with the separator Python's `print` commonly uses. -/
 private def pyJoinPrinted (parts : List String) : String :=
   String.intercalate ", " parts

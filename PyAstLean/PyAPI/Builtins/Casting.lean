@@ -76,12 +76,46 @@ instance : PyFloatCast Int where pyFloat x := floatOfInt x
 instance : PyFloatCast Nat where pyFloat x := Float.ofNat x
 instance : PyFloatCast Bool where
   pyFloat | true => 1.0 | false => 0.0
+/-- `10.0 ^ n` built by repeated multiplication (avoids `Nat` overflow for the exponent). -/
+private def tenPowNat : Nat → Float
+  | 0 => 1.0
+  | n + 1 => 10.0 * tenPowNat n
+
+/--
+Parse a Python-style decimal float literal: optional sign, integer and/or fractional part,
+and an optional `e`/`E` exponent (e.g. `"2.75"`, `"-.5"`, `"1.5e-3"`). Anything unparseable
+in a part contributes `0`, matching the forgiving `int(...)` cast above.
+-/
+private def parseFloatString (s : String) : Float :=
+  let t := s.trimAscii.toString
+  if t == "inf" || t == "+inf" || t == "Infinity" then (1.0 : Float) / 0.0
+  else if t == "-inf" || t == "-Infinity" then (-1.0 : Float) / 0.0
+  else if t == "nan" then (0.0 : Float) / 0.0
+  else
+    let (neg, body) :=
+      if t.startsWith "-" then (true, (t.drop 1).toString)
+      else if t.startsWith "+" then (false, (t.drop 1).toString)
+      else (false, t)
+    -- normalise the exponent marker so the split below catches both `e` and `E`
+    let lower := body.map (fun c => if c == 'E' then 'e' else c)
+    let (mant, exp) :=
+      match lower.splitOn "e" with
+      | [m] => (m, (0 : Int))
+      | [m, e] => (m, e.toInt?.getD 0)
+      | _ => (lower, 0)
+    let (ip, fp) :=
+      match mant.splitOn "." with
+      | [i] => (i, "")
+      | [i, f] => (i, f)
+      | _ => (mant, "")
+    let intVal : Nat := ip.toNat?.getD 0
+    let fracVal : Nat := fp.toNat?.getD 0
+    let base := Float.ofNat intVal + Float.ofNat fracVal / tenPowNat fp.length
+    let scale := if exp ≥ 0 then tenPowNat exp.toNat else 1.0 / tenPowNat (-exp).toNat
+    let v := base * scale
+    if neg then -v else v
+
 instance : PyFloatCast String where
-  pyFloat s :=
-    let t := s.trimAscii.toString
-    if t == "inf" || t == "+inf" || t == "Infinity" then (1.0 : Float) / 0.0
-    else if t == "-inf" || t == "-Infinity" then (-1.0 : Float) / 0.0
-    else if t == "nan" then (0.0 : Float) / 0.0
-    else 0.0
+  pyFloat s := parseFloatString s
 
 end PyAstLean

@@ -30,6 +30,28 @@ except ImportError:
 
 MAX_FLOW_PASSES: int = 5
 
+# `typing` container aliases -> the builtin generic spelling the rest of the pipeline already
+# lowers (`list[...]` -> `List`, `dict[...]` -> `Std.HashMap`). Abstract collection protocols
+# collapse onto the closest concrete builtin.
+_TYPING_GENERIC_ALIASES: dict[str, str] = {
+    "List": "list",
+    "Dict": "dict",
+    "Tuple": "tuple",
+    "Set": "set",
+    "FrozenSet": "set",
+    "Sequence": "list",
+    "MutableSequence": "list",
+    "Iterable": "list",
+    "Collection": "list",
+    "Mapping": "dict",
+    "MutableMapping": "dict",
+}
+
+# `typing` forms we cannot model as a concrete Lean type; let Lean infer (treated as `Any`).
+_TYPING_ANY_ALIASES: frozenset[str] = frozenset(
+    {"Any", "Callable", "Iterator", "Hashable", "Sized", "object"}
+)
+
 def run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True)
 
@@ -37,6 +59,10 @@ def run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
 def node_to_str(node: TypingAny) -> str:
     """Normalize a small LibCST type node to a comparable string form."""
     if isinstance(node, cst.Name):
+        if node.value in _TYPING_GENERIC_ALIASES:
+            return _TYPING_GENERIC_ALIASES[node.value]
+        if node.value in _TYPING_ANY_ALIASES:
+            return "Any"
         return node.value
     if isinstance(node, cst.SimpleString):
         return node.value
@@ -243,6 +269,12 @@ class Lean4Annotator(cst.CSTTransformer):
             return cst.Name("Any")
         if isinstance(node, cst.Name) and node.value == "Self":
             return cst.Name(self.current_class) if self.current_class else cst.Name("Any")
+        # Bare `typing` aliases (no subscript): map containers to their builtin spelling and
+        # the un-modelable type forms (Callable, Any-likes) to `Any`.
+        if isinstance(node, cst.Name) and node.value in _TYPING_GENERIC_ALIASES:
+            return cst.Name(_TYPING_GENERIC_ALIASES[node.value])
+        if isinstance(node, cst.Name) and node.value in _TYPING_ANY_ALIASES:
+            return cst.Name("Any")
         if isinstance(node, cst.Integer):
             return cst.Name("int")
         if isinstance(node, cst.SimpleString):
@@ -260,7 +292,61 @@ class Lean4Annotator(cst.CSTTransformer):
                     if inner is None:
                         return cst.Name("Any")
                     return cst.BinaryOperation(left=inner, operator=cst.BitOr(), right=cst.Name("None"))
+            if name == "Union":
+                return self._simplify_union(node)
+        if isinstance(node, cst.BinaryOperation) and isinstance(node.operator, cst.BitOr):
+            # `A | B` unions (incl. flow-merged ones like `Sequence[float] | list[float]`):
+            # simplify both operands and collapse a duplicate into the single type.
+            left = self._simplify_type(node.left) or cst.Name("Any")
+            right = self._simplify_type(node.right) or cst.Name("Any")
+            if node_to_str(left) == node_to_str(right):
+                return left
+            if node_to_str(left) == "None":
+                return right
+            return node.with_changes(left=left, right=right)
+            # `List[int]` -> `list[int]`, `Dict[str, int]` -> `dict[str, int]`, etc. Rewrite the
+            # head to its builtin generic and recurse into each subscript element.
+            if name in _TYPING_GENERIC_ALIASES:
+                return node.with_changes(
+                    value=cst.Name(_TYPING_GENERIC_ALIASES[name]),
+                    slice=[self._simplify_subscript_element(el) for el in node.slice],
+                )
         return node
+
+    def _simplify_subscript_element(self, element: cst.SubscriptElement) -> cst.SubscriptElement:
+        index = element.slice
+        if isinstance(index, cst.Index):
+            simplified = self._simplify_type(index.value)
+            if simplified is not None:
+                return element.with_changes(slice=index.with_changes(value=simplified))
+        return element
+
+    def _simplify_union(self, node: cst.Subscript) -> cst.BaseExpression:
+        """`Union[X, None]` collapses to `X | None` (like Optional); any wider union we cannot
+        model becomes `Any`."""
+        members: list[cst.BaseExpression] = [
+            el.slice.value
+            for el in node.slice
+            if isinstance(el.slice, cst.Index)
+        ]
+        non_none = [m for m in members if not (isinstance(m, cst.Name) and m.value == "None")]
+        has_none = len(non_none) != len(members)
+        if len(non_none) == 1:
+            inner = self._simplify_type(non_none[0]) or cst.Name("Any")
+            if has_none:
+                return cst.BinaryOperation(left=inner, operator=cst.BitOr(), right=cst.Name("None"))
+            return inner
+        return cst.Name("Any")
+
+    def leave_Annotation(
+        self, original_node: cst.Annotation, updated_node: cst.Annotation
+    ) -> cst.Annotation:
+        """Normalise every source-written annotation (params, returns, AnnAssign) through the
+        same `typing` -> builtin simplification used for stub-derived signatures."""
+        simplified = self._simplify_type(updated_node.annotation)
+        if simplified is not None and not isinstance(simplified, cst.Annotation):
+            return updated_node.with_changes(annotation=simplified)
+        return updated_node
 
     def _get_best_ann(
         self,
@@ -694,6 +780,13 @@ LIBRARY_MEMBER_RETURNS: dict[str, dict[str, str]] = {
         "lcm": "int", "isqrt": "int", "comb": "int", "perm": "int", "prod": "int",
         "isnan": "bool", "isinf": "bool", "isfinite": "bool",
     },
+    "scipy": {
+        # special / constants / stats / linalg — all return floats in this subset.
+        "factorial": "float", "comb": "float", "perm": "float", "gamma": "float", "erf": "float",
+        "pi": "float", "golden": "float", "golden_ratio": "float",
+        "tmean": "float", "gmean": "float", "hmean": "float",
+        "norm": "float", "det": "float",
+    },
 }
 
 
@@ -715,13 +808,20 @@ class FlowTracker(cst.CSTVisitor):
 
     def visit_Import(self, node: cst.Import) -> bool:
         for alias in node.names:
-            if isinstance(alias.name, cst.Name):
-                mod: str = alias.name.value
-                bound: str = alias.asname.name.value if (
-                    alias.asname is not None and isinstance(alias.asname.name, cst.Name)
-                ) else mod
-                if mod in LIBRARY_MEMBER_RETURNS:
-                    self.module_aliases[bound] = mod
+            # Module name is a `Name` (`numpy`) or a dotted `Attribute` (`scipy.special`); take
+            # the leftmost component as the registry root so `sp.factorial` infers via `scipy`.
+            mod: str | None = None
+            cursor: TypingAny = alias.name
+            while isinstance(cursor, cst.Attribute):
+                cursor = cursor.value
+            if isinstance(cursor, cst.Name):
+                mod = cursor.value
+            if mod is None or mod not in LIBRARY_MEMBER_RETURNS:
+                continue
+            bound: str = alias.asname.name.value if (
+                alias.asname is not None and isinstance(alias.asname.name, cst.Name)
+            ) else mod
+            self.module_aliases[bound] = mod
         return True
 
     def visit_ClassDef(self, node: cst.ClassDef) -> bool:

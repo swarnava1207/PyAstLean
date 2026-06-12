@@ -19,28 +19,6 @@ open Lean.Parser.Term
   Feature-specific statement lowering lives in the smaller files under `PyGens/`.
 -/
 
-@[pygen "Module"]
-def moduleSyntax : (kind : SyntaxNodeKind) → Json →
-    PygenM (TSyntax kind)
-    | `term, json => do
-        let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
-          s!"Module node does not have a 'body' field or it is not a JSON array: {json}"
-        let some first := bodyElems[0]? | throwError "Cannot translate an empty module to a term."
-        unless bodyElems.size == 1 do
-          throwError "Module-to-term translation requires exactly one top-level statement."
-        withFreshVariables do
-          getCode first `term
-    | `command, json => do
-        let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
-          s!"Module node does not have a 'body' field or it is not a JSON array: {json}"
-        let mut cmds : Array (TSyntax `command) := #[]
-        for elem in bodyElems do
-          let elemStx ← withFreshVariables do
-            getCode elem `command
-          cmds := appendCommandSyntax cmds elemStx
-        return ⟨mkNullNode (cmds.map TSyntax.raw)⟩
-    | _, _ => throwError s!"Unsupported syntax category for Module node"
-
 /-- Map a simple Python annotation JSON node to a Lean type term when we know a direct runtime type. -/
 partial def functionArgTypeSyntax? (annotationJson : Json) : PygenM (Option (TSyntax `term)) := do
   let .ok nodeType := annotationJson.getObjValAs? String "node_type" | throwError
@@ -62,11 +40,11 @@ partial def functionArgTypeSyntax? (annotationJson : Json) : PygenM (Option (TSy
       let .ok sliceJson := annotationJson.getObjValAs? Json "slice" | throwError
         s!"Function argument subscript annotation is missing a 'slice' field: {annotationJson}"
       match valueJson.getObjValAs? String "node_type", valueJson.getObjValAs? String "id" with
-      | .ok "Name", .ok "list" =>
+      | .ok "Name", .ok "list" | .ok "Name", .ok "List" =>
           match ← functionArgTypeSyntax? sliceJson with
           | some elemTy => return some (← `(List $elemTy))
           | none => return none
-      | .ok "Name", .ok "dict" =>
+      | .ok "Name", .ok "dict" | .ok "Name", .ok "Dict" =>
           match sliceJson.getObjValAs? String "node_type" with
           | .ok "Tuple" =>
               let .ok elts := sliceJson.getObjValAs? (Array Json) "elts" | throwError
@@ -323,7 +301,16 @@ def funcDefSyntax : (kind : SyntaxNodeKind) → Json →
           | none =>
               let bodyElems ← functionBodyElems json
               let valueStx ← functionValueSyntax argInfos bodyElems
-              `(def $nameIdent := $valueStx)
+              -- take care of recursion function Type
+              if bodyElems.any (jsonReferencesName · name) then
+                match ← functionReturnTypeSyntax? json with
+                | some retTy =>
+                    match ← functionArrowTypeSyntax? argInfos retTy with
+                    | some fullTy => `(partial def $nameIdent : $fullTy := $valueStx)
+                    | none => `(partial def $nameIdent := $valueStx)
+                | none => `(partial def $nameIdent := $valueStx)
+              else
+                `(def $nameIdent := $valueStx)
         -- Python's leading-underscore convention (`def _foo`) maps to a Lean `private def`.
         applyPrivacy name cmd
     | `term, json => do
@@ -504,5 +491,93 @@ def sumToNWithRec' (n: Nat)  := Id.run do
       sum := sum + (i + 1)
       i := i + 1
     return sum
+
+/-- All top-level `FunctionDef` nodes in a module body, paired with their names, in module order. -/
+def topLevelFuncDefs (bodyElems : Array Json) : Array (String × Json) :=
+  bodyElems.filterMap fun e =>
+    match e.getObjValAs? String "node_type", e.getObjValAs? String "name" with
+    | .ok "FunctionDef", .ok name => some (name, e)
+    | _, _ => none
+
+/-- For each top-level function, the set of top-level functions reachable from its body
+(transitive closure of "references"). Used to find mutually-recursive groups. -/
+def transitiveFuncRefs (funcs : Array (String × Json)) : Array (String × Array String) := Id.run do
+  let names := funcs.map (·.1)
+  let mut reach : Array (String × Array String) := funcs.map fun (nm, body) =>
+    (nm, names.filter fun m => jsonReferencesName body m)
+  -- Relax to a fixed point (longest reference chain is at most `names.size` long).
+  for _ in [0:names.size] do
+    reach := reach.map fun (nm, rs) => Id.run do
+      let mut acc := rs
+      for r in rs do
+        match reach.find? (·.1 == r) with
+        | some (_, rs2) =>
+            for x in rs2 do
+              unless acc.contains x do acc := acc.push x
+        | none => pure ()
+      return (nm, acc)
+  return reach
+
+/-- The mutual-recursion group (strongly-connected component) containing `nm`: every function `m`
+such that `nm` reaches `m` and `m` reaches `nm`. A non-mutual function yields a singleton. -/
+def mutualGroupOf (reach : Array (String × Array String)) (nm : String) : Array String :=
+  let reachOf := fun x => ((reach.find? (·.1 == x)).map (·.2)).getD #[]
+  (#[nm] ++ (reachOf nm).filter fun m => m != nm && (reachOf m).contains nm)
+
+/-- Build `partial def name : <arg tys → ret> := value` for a member of a mutual group. The
+explicit signature is required for `mutual` and also keeps operators from defaulting (see the
+self-recursive case in `funcDefSyntax`). -/
+def mutualMemberDef (json : Json) : PygenM (TSyntax `command) := do
+  let .ok name := json.getObjValAs? String "name" | throwError
+    s!"FuncDef node does not have a 'name' field: {json}"
+  let nameIdent := mkIdent name.toName
+  let argInfos ← functionArgInfos json
+  let bodyElems ← functionBodyElems json
+  let valueStx ← functionValueSyntax argInfos bodyElems
+  match ← functionReturnTypeSyntax? json with
+  | some retTy =>
+      match ← functionArrowTypeSyntax? argInfos retTy with
+      | some fullTy => `(command| partial def $nameIdent : $fullTy := $valueStx)
+      | none => `(command| partial def $nameIdent := $valueStx)
+  | none => `(command| partial def $nameIdent := $valueStx)
+
+@[pygen "Module"]
+def moduleSyntax : (kind : SyntaxNodeKind) → Json →
+    PygenM (TSyntax kind)
+    | `term, json => do
+        let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
+          s!"Module node does not have a 'body' field or it is not a JSON array: {json}"
+        let some first := bodyElems[0]? | throwError "Cannot translate an empty module to a term."
+        unless bodyElems.size == 1 do
+          throwError "Module-to-term translation requires exactly one top-level statement."
+        withFreshVariables do
+          getCode first `term
+    | `command, json => do
+        let .ok bodyElems := json.getObjValAs? (Array Json) "body" | throwError
+          s!"Module node does not have a 'body' field or it is not a JSON array: {json}"
+        let funcs := topLevelFuncDefs bodyElems
+        let reach := transitiveFuncRefs funcs
+        let mut cmds : Array (TSyntax `command) := #[]
+        let mut emitted : Array String := #[]
+        for elem in bodyElems do
+          match elem.getObjValAs? String "node_type", elem.getObjValAs? String "name" with
+          | .ok "FunctionDef", .ok name =>
+              unless emitted.contains name do
+                let group := mutualGroupOf reach name
+                if group.size ≥ 2 then
+                  -- A mutually-recursive group can't be a sequence of plain `def`s (each would
+                  -- forward-reference an undeclared name), so emit it as one `mutual … end` block
+                  -- of `partial def`s, in module order.
+                  let members := funcs.filterMap fun (m, j) =>
+                    if group.contains m then some j else none
+                  let defs ← members.mapM fun j => withFreshVariables do mutualMemberDef j
+                  cmds := appendCommandSyntax cmds (← `(command| mutual $defs:command* end))
+                  emitted := emitted ++ group
+                else
+                  cmds := appendCommandSyntax cmds (← withFreshVariables do getCode elem `command)
+          | _, _ =>
+              cmds := appendCommandSyntax cmds (← withFreshVariables do getCode elem `command)
+        return ⟨mkNullNode (cmds.map TSyntax.raw)⟩
+    | _, _ => throwError s!"Unsupported syntax category for Module node"
 
 end PyAstLean

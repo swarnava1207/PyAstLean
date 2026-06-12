@@ -566,6 +566,170 @@ class ASTToJsonLeanVisitorBase:
             "type_comment": node.type_comment,
             "type_params": [self.visit(type_param) for type_param in getattr(node, "type_params", [])]
         }
+    def _self_attr_name(self, target):
+        """If `target` is the AST for `self.X`, return the attribute name `X`, else None."""
+        if (isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"):
+            return target.attr
+        return None
+
+    def _add_class_field(self, fields, seen, name, annotation, default):
+        """Record a class field, merging type/default info if the name is already known.
+
+        First occurrence fixes order; a later annotated/defaulted occurrence upgrades a
+        previously-unknown annotation or default. `annotation`/`default` are raw AST nodes
+        (or None) and get visited to IR here.
+        """
+        ann_json = self.visit(annotation) if annotation is not None else None
+        def_json = self.visit(default) if default is not None else None
+        if name in seen:
+            idx = seen[name]
+            if ann_json is not None and fields[idx]["annotation"] is None:
+                fields[idx]["annotation"] = ann_json
+            if def_json is not None and fields[idx]["default"] is None:
+                fields[idx]["default"] = def_json
+        else:
+            seen[name] = len(fields)
+            fields.append({"name": name, "annotation": ann_json, "default": def_json})
+
+    def _collect_self_fields(self, body, fields, seen, param_types=None):
+        """Harvest `self.X` assignment targets from a method body into the field list.
+
+        Descends into nested compound-statement blocks (if/for/while/with/try) so
+        conditionally-set attributes still become fields, but never descends into nested
+        function/class scopes. `param_types` maps a parameter name to its annotation AST so the
+        common `self.x = x` constructor pattern picks up the field type from the parameter.
+        """
+        param_types = param_types or {}
+        for stmt in body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(stmt, ast.AnnAssign):
+                name = self._self_attr_name(stmt.target)
+                if name is not None:
+                    self._add_class_field(fields, seen, name, stmt.annotation, None)
+            elif isinstance(stmt, ast.Assign):
+                for tgt in stmt.targets:
+                    name = self._self_attr_name(tgt)
+                    if name is not None:
+                        # `self.x = x` where `x` is a typed parameter -> use the param's type.
+                        ann = None
+                        if (isinstance(stmt.value, ast.Name)
+                                and stmt.value.id in param_types):
+                            ann = param_types[stmt.value.id]
+                        self._add_class_field(fields, seen, name, ann, None)
+            elif isinstance(stmt, ast.AugAssign):
+                name = self._self_attr_name(stmt.target)
+                if name is not None:
+                    self._add_class_field(fields, seen, name, None, None)
+            for block_attr in ("body", "orelse", "finalbody"):
+                block = getattr(stmt, block_attr, None)
+                if isinstance(block, list):
+                    self._collect_self_fields(block, fields, seen, param_types)
+            for handler in getattr(stmt, "handlers", []):
+                self._collect_self_fields(handler.body, fields, seen, param_types)
+
+    def _method_mutates_self(self, funcdef):
+        """True iff any statement in the method (excluding nested scopes) assigns to self.X."""
+        def walk(body):
+            for stmt in body:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    continue
+                if isinstance(stmt, ast.AnnAssign) and self._self_attr_name(stmt.target):
+                    return True
+                if isinstance(stmt, ast.Assign) and any(
+                    self._self_attr_name(t) for t in stmt.targets
+                ):
+                    return True
+                if isinstance(stmt, ast.AugAssign) and self._self_attr_name(stmt.target):
+                    return True
+                for block_attr in ("body", "orelse", "finalbody"):
+                    block = getattr(stmt, block_attr, None)
+                    if isinstance(block, list) and walk(block):
+                        return True
+                for handler in getattr(stmt, "handlers", []):
+                    if walk(handler.body):
+                        return True
+            return False
+        return walk(funcdef.body)
+
+    def visit_ClassDef(self, node):
+        """Translates ast.ClassDef to a JSON IR node (Python class -> Lean structure + namespace).
+
+        Fields are harvested from the *raw* AST (`self.X = ...` and class-level `x = ...`),
+        because `visit_AnnAssign` collapses `x: T = v` to a plain `Assign` and would otherwise
+        drop the field type. Methods are reused as ordinary `FunctionDef` IR nodes; the backend
+        re-typed them with an explicit `self` and namespaces them under the class name.
+        """
+        if node.keywords:
+            raise NotImplementedError("Class keyword arguments (e.g. metaclass=) are not supported.")
+        if len(node.bases) > 1:
+            raise NotImplementedError("Multiple inheritance is not supported.")
+        bases = []
+        for base in node.bases:
+            if isinstance(base, ast.Name):
+                if base.id != "object":
+                    bases.append(self.visit(base))
+            else:
+                raise NotImplementedError("Only a single simple (Name) base class is supported.")
+
+        fields = []
+        seen = {}
+        methods = []
+        mutators = []
+        staticmethods = []
+        classmethods = []
+
+        # A leading class docstring is captured here (the per-statement loop below skips bare
+        # `ast.Expr` strings); the backend renders it as the structure's `/-- … -/` doc comment.
+        docstring = None
+        if node.body and self._is_docstring_stmt(node.body[0]):
+            docstring = node.body[0].value.value
+
+        for stmt in node.body:
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                self._add_class_field(fields, seen, stmt.target.id, stmt.annotation, stmt.value)
+            elif (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                  and isinstance(stmt.targets[0], ast.Name)):
+                self._add_class_field(fields, seen, stmt.targets[0].id, None, stmt.value)
+            elif isinstance(stmt, ast.FunctionDef):
+                methods.append(self.visit(stmt))
+                deco_names = {d.id for d in stmt.decorator_list if isinstance(d, ast.Name)}
+                is_static = "staticmethod" in deco_names
+                if is_static:
+                    staticmethods.append(stmt.name)
+                if "classmethod" in deco_names:
+                    classmethods.append(stmt.name)
+                if not is_static:
+                    if self._method_mutates_self(stmt):
+                        mutators.append(stmt.name)
+                    param_types = {
+                        a.arg: a.annotation
+                        for a in stmt.args.args
+                        if a.annotation is not None
+                    }
+                    self._collect_self_fields(stmt.body, fields, seen, param_types)
+            elif isinstance(stmt, (ast.Pass, ast.Expr)):
+                continue  # docstring or `pass`
+            else:
+                raise NotImplementedError(
+                    f"Unsupported statement in class body: {type(stmt).__name__}"
+                )
+
+        return {
+            "node_type": "ClassDef",
+            "name": node.name,
+            "bases": bases,
+            "decorator_list": [self.visit(d) for d in node.decorator_list],
+            "docstring": docstring,
+            "fields": fields,
+            "methods": methods,
+            "mutators": mutators,
+            "staticmethods": staticmethods,
+            "classmethods": classmethods,
+        }
+
     def visit_Lambda(self, node):
         """Translates ast.Lambda to a JSON IR node."""
         return {
@@ -617,14 +781,18 @@ class ASTToJsonLeanVisitorBase:
         annotations during code generation. We keep declaration-only annotated
         assignments (`x: T`) distinct so the backend can decide how to handle them.
         """
-        if node.simple != 1:
-            raise NotImplementedError("Only simple annotated assignments are supported.")
+        # An *initialized* annotated assignment `target: T = v` collapses to a plain `Assign`
+        # regardless of target shape — including attribute targets like `self.x: int = v`, which
+        # `annotate_python` introduces inside class methods (these are non-`simple`). Field types
+        # are recovered separately from the raw AST in `visit_ClassDef`.
         if node.value is not None:
             return {
                 "node_type": "Assign",
                 "target": self.visit(node.target),
                 "value": self.visit(node.value)
             }
+        if node.simple != 1:
+            raise NotImplementedError("Only simple declaration-only annotations are supported.")
         return {
             "node_type": "AnnAssign",
             "target": self.visit(node.target),

@@ -265,21 +265,24 @@ def runMatcher (name : String) (text : String) (check : Array String) (checkNot 
   runAbsent name text checkNot env
   runExact name text exact
 
-/-- Wrap generated Lean output in a minimal module so PALC can elaborate it. -/
+/-- Wrap generated Lean output in a minimal module so PALC can elaborate it.
+
+`--target command` output is already a complete module (it carries its own
+`import PyAstLean` / `import Libraries` / `open` preamble), so it is emitted verbatim — adding
+another `import … namespace …` wrapper would push those generated `import`s below the top of
+the file, which Lean rejects. Only the bare-expression `term` target needs wrapping. -/
 def wrappedGeneratedLean (target generated : String) : String :=
-  let body :=
-    if target == "command" then
-      generated.trimAscii.toString ++ "\n"
-    else
-      s!"#check {generated.trimAscii.toString}\n"
-  String.intercalate "\n"
-    [ "import PyAstLean"
-    , "open PyAstLean"
-    , "namespace PALCGenerated"
-    , ""
-    , body
-    , "end PALCGenerated"
-    ]
+  if target == "command" then
+    generated.trimAscii.toString ++ "\n"
+  else
+    String.intercalate "\n"
+      [ "import PyAstLean"
+      , "open PyAstLean"
+      , "namespace PALCGenerated"
+      , ""
+      , s!"#check {generated.trimAscii.toString}\n"
+      , "end PALCGenerated"
+      ]
 
 /-- Compile the generated Lean code in a scratch module so passing PALC cases also elaborate. -/
 def compileGeneratedLean (pyPath : System.FilePath) (target generated : String) :

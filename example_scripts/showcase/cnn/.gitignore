@@ -1,0 +1,8 @@
+# Generated artifacts — recreated on every `run_showcase.py` run.
+# model.lean is the transpiler's output for model.py; gallery.png is the rendered montage.
+model.lean
+gallery.png
+__pycache__/
+
+# Cached MNIST PNGs downloaded by fetch_data.py (re-fetched on demand).
+data/

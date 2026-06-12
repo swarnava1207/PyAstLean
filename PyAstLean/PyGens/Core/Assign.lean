@@ -150,6 +150,26 @@ def sliceTargetParts? (target : Json) :
   let upperTerm ← sliceBoundOptTerm (jsonFieldOption sliceJson "upper")
   return some (containerIdent, lowerTerm, upperTerm)
 
+/-- If `target` is `self.X` (an `Attribute` whose base is the `Name` `self`), return the attribute
+name `X`. Used to lower attribute writes inside a class method to a `self` record update. -/
+def selfAttrTarget? (target : Json) : Option String :=
+  if jsonNodeType? target == some "Attribute" then
+    match (target.getObjVal? "value").toOption, (target.getObjValAs? String "attr").toOption with
+    | some v, some attr =>
+        if jsonNodeType? v == some "Name" && v.getObjValAs? String "id" == .ok "self" then
+          some attr
+        else none
+    | _, _ => none
+  else none
+
+/-- Emit `self := { self with X := rhs }` — the value-semantics lowering of `self.X = rhs` inside a
+class method body (`self` is the method's `let mut` shadow). -/
+def selfRecordUpdateDoElem (attr : String) (rhs : TSyntax `term) : PygenM (TSyntax `doElem) := do
+  let selfId := mkIdent `self
+  let attrId := mkIdent attr.toName
+  let fields := #[← `(Lean.Parser.Term.structInstField| $attrId:ident := $rhs)]
+  `(doElem| $selfId:ident := { $selfId:term with $fields:structInstField,* })
+
 /-- Simple returned expressions can stay unparenthesized; more complex or effectful ones
 keep parentheses so Lean parses multiline `return` expressions reliably. -/
 def shouldParenthesizeReturnValue (value : Json) : Bool :=
@@ -244,6 +264,12 @@ def assignSyntax : (kind : SyntaxNodeKind) → Json →
                   `((← $valueStx))
                 else
                   pure valueStx
+            -- `self.X = v` inside a class method (where `self` is the `let mut` shadow) rebuilds
+            -- `self` via record update. The `hasVar self` guard keeps top-level `obj.x = v`
+            -- (no mutable `self` in scope) on its normal path.
+            if let some attr := selfAttrTarget? target then
+              if ← hasVar `self then
+                return ← selfRecordUpdateDoElem attr rhs
             match ← sliceTargetParts? target with
             | some (containerIdent, lowerTerm, upperTerm) =>
                 -- `s[a:b] = repl` replaces the slice and reassigns the variable.
