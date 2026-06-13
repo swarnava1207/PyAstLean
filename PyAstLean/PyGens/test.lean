@@ -1,14 +1,8 @@
 import PyAstLean
-import Std.Tactic.Do
 import Libraries
 
 open PyAstLean
 open Libraries
-
-open Std Do
-
-set_option mvcgen.warning false
-
 
 /-
 Demonstrates `--best-effort`: unsupported libraries (logging, requests, random) don't abort
@@ -22,13 +16,13 @@ original Python source, and the rest of the program transpiles and runs normally
     python3 src/py2lean.py example_scripts/showcase/best_effort_demo.py --target command --best-effort
 -/
 def logger :=
-  pyUnsupportedVal "logger: Logger = logging.getLogger(__name__)"
+  pyUnsupported "logger: Logger = logging.getLogger(__name__)"
 
 def total_score := fun (scores : List Int) ↦
   Id.run
     (do
-      let _ := pyUnsupportedUnit "logger.info(\"scoring\")"
-      let mut blob := pyUnsupportedVal "blob = requests.get(\"http://x\")"
+      let _ := pyUnsupported "logger.info(\"scoring\")"
+      let mut blob := pyUnsupported "blob = requests.get(\"http://x\")"
       let mut total := (0 : Int)
       for s in (PyAstLean.pyIter scores)do
         total := total +ₚ s
@@ -36,7 +30,7 @@ def total_score := fun (scores : List Int) ↦
 
 def main' :=
   ((do
-      let _ := pyUnsupportedUnit "logging.basicConfig(level=logging.INFO)"
+      let _ := pyUnsupported "logging.basicConfig(level=logging.INFO)"
       let mut scores := [(10 : Int), (20 : Int), (30 : Int), (40 : Int)]
       let _ ← pyPrintIO [pyPrintArg "total", pyPrintArg (total_score scores)]
       let _ ← pyPrintIO [pyPrintArg "doubled", pyPrintArg (total_score scores *ₚ (2 : Int))]) :

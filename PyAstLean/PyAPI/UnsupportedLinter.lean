@@ -17,10 +17,10 @@ register_option linter.unsupported : Bool := {
             transpiler does not support"
 }
 
-/-- True for an identifier whose final component is one of the placeholder names. -/
+/-- True for an identifier whose final component is the placeholder name. -/
 private def isUnsupportedName (nm : Name) : Bool :=
   match nm.eraseMacroScopes with
-  | .str _ s => s == "pyUnsupported" || s == "pyUnsupportedUnit" || s == "pyUnsupportedVal"
+  | .str _ s => s == "pyUnsupported"
   | _ => false
 
 /-- Collect every identifier occurrence of a placeholder name in a syntax tree. -/
@@ -36,8 +36,7 @@ def unsupportedLinter : Linter where
       return
     for occ in collect stx #[] do
       Linter.logLint linter.unsupported occ
-        m!"Code is unsupported for transpilation to Lean. \
-           (the original Python source is in the string argument)"
+        m!"Could not translate this Python to Lean because it is Unsupported. Left as a no-op placeholder and does nothing."
 
 initialize addLinter unsupportedLinter
 
